@@ -5,18 +5,18 @@ export interface SpellData {
     callGraph: Record<string, string[]>;
 }
 
-export function analyzeCode(code: string): SpellData | null {
+export function analyzeCode(code: string, filePath?: string): SpellData | null {
     try {
         // locations: true で行番号や文字位置を正確に取得
         const ast = acornLoose.parse(code, { ecmaVersion: 2020, locations: true });
-        return extractSpellData(ast, code);
+        return extractSpellData(ast, code, filePath);
     } catch (e) {
         console.error("Parsing failed:", e);
         return null;
     }
 }
 
-function extractSpellData(ast: any, sourceCode: string): SpellData {
+function extractSpellData(ast: any, sourceCode: string, filePath?: string): SpellData {
     const functions: any[] = [];
 
     // ソースコードから生のテキスト（条件式など）を切り出す魔法
@@ -81,6 +81,18 @@ function extractSpellData(ast: any, sourceCode: string): SpellData {
         }
     };
 
+    // 条件分岐やループの数をざっくりカウント
+    const countConditions = (node: any) => {
+        let count = 0;
+        walk(node, (n) => {
+            if (!n || typeof n !== 'object') return;
+            if (['IfStatement', 'ConditionalExpression'].includes(n.type)) count++;
+            if (['ForStatement', 'WhileStatement', 'DoWhileStatement', 'ForInStatement', 'ForOfStatement', 'SwitchStatement'].includes(n.type)) count++;
+            if (n.type === 'LogicalExpression' && ['&&', '||'].includes(n.operator)) count++;
+        });
+        return count;
+    };
+
     // 関数抽出メインロジック
     const findFunctions = (root: any) => {
         walk(root, (n) => {
@@ -103,8 +115,14 @@ function extractSpellData(ast: any, sourceCode: string): SpellData {
                     lineCount: (start && end) ? (end - start + 1) : 10,
                     variables: [],
                     calls: [],
-                    logicTree: buildLogicTree(fnNode.body || fnNode) // ロジックツリー生成
+                    logicTree: buildLogicTree(fnNode.body || fnNode), // ロジックツリー生成
+                    fileName: filePath || 'unknown',
+                    startLine: start,
+                    endLine: end,
+                    conditions: 0
                 };
+
+                stats.conditions = countConditions(fnNode.body || fnNode);
 
                 // 内部スキャン
                 walk(fnNode.body || fnNode, (m) => {

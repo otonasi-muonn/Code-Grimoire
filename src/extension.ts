@@ -13,7 +13,7 @@ export function activate(context: vscode.ExtensionContext) {
             const code = event.document.getText();
             
             // 脳（analyzer）に解析させる
-            const spellData = analyzeCode(code);
+            const spellData = analyzeCode(code, event.document.uri.fsPath);
 
             if (spellData) {
                 // 顔（webview）にデータを送る
@@ -43,10 +43,27 @@ export function activate(context: vscode.ExtensionContext) {
             // 顔（webview）のHTMLを取得
             panel.webview.html = getWebviewContent();
 
+            panel.webview.onDidReceiveMessage(async (message) => {
+                if (message.command === 'jumpToCode' && message.fileName && panel) {
+                    try {
+                        const targetUri = vscode.Uri.file(message.fileName);
+                        const doc = await vscode.workspace.openTextDocument(targetUri);
+                        const editor = await vscode.window.showTextDocument(doc);
+                        const line = Math.max((message.line || 1) - 1, 0);
+                        const range = new vscode.Range(line, 0, line, 0);
+                        editor.selection = new vscode.Selection(range.start, range.end);
+                        editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+                    } catch (err) {
+                        console.error('Jump failed', err);
+                        vscode.window.showErrorMessage('Failed to jump to code location.');
+                    }
+                }
+            }, undefined, context.subscriptions);
+
             // 開いた瞬間に現在のコードを解析して表示
             const editor = vscode.window.activeTextEditor;
             if (editor) {
-                const spellData = analyzeCode(editor.document.getText());
+                const spellData = analyzeCode(editor.document.getText(), editor.document.uri.fsPath);
                 if (spellData) {
                     panel.webview.postMessage({ type: 'CAST_MANA', spellData });
                 }

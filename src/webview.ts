@@ -12,6 +12,7 @@ export function getWebviewContent() {
             <script>
                 let spellData = { functions: [], callGraph: {} };
                 let isCorrupted = false;
+                const vscode = acquireVsCodeApi();
                 
                 // カメラ操作用変数
                 let viewX = 0;
@@ -21,6 +22,47 @@ export function getWebviewContent() {
                 let hoverTooltip = null;
                 const C_CYAN = [0, 220, 255];
                 const C_MAGENTA = [255, 50, 150];
+
+                // 文字列から安定した色相を生成
+                function stringToHue(str) {
+                    let hash = 0;
+                    for (let i = 0; i < str.length; i++) {
+                        hash = str.charCodeAt(i) + ((hash << 5) - hash);
+                    }
+                    return Math.abs(hash % 360);
+                }
+
+                // HSL -> RGB (0-255)
+                function hslToRgb(h, s, l) {
+                    const hue = h / 360;
+                    let r, g, b;
+                    if (s === 0) {
+                        r = g = b = l;
+                    } else {
+                        const hue2rgb = (p, q, t) => {
+                            if (t < 0) t += 1;
+                            if (t > 1) t -= 1;
+                            if (t < 1/6) return p + (q - p) * 6 * t;
+                            if (t < 1/2) return q;
+                            if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+                            return p;
+                        };
+                        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+                        const p = 2 * l - q;
+                        r = hue2rgb(p, q, hue + 1/3);
+                        g = hue2rgb(p, q, hue);
+                        b = hue2rgb(p, q, hue - 1/3);
+                    }
+                    return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+                }
+
+                function getPalette(fileName) {
+                    const hue = stringToHue(fileName || 'unknown');
+                    const base = hslToRgb(hue, 0.7, 0.55);
+                    const glow = hslToRgb((hue + 20) % 360, 0.7, 0.65);
+                    const dim = hslToRgb(hue, 0.5, 0.35);
+                    return { base, glow, dim };
+                }
 
                 window.addEventListener('message', event => {
                     const msg = event.data;
@@ -65,6 +107,24 @@ export function getWebviewContent() {
                     viewX = 0;
                     viewY = 0;
                     zoom = 1.0;
+                }
+
+                function mousePressed() {
+                    if (!spellData.functions || spellData.functions.length === 0) return;
+                    const worldX = (mouseX - width / 2 - viewX) / zoom;
+                    const worldY = (mouseY - height / 2 - viewY) / zoom;
+                    for (const f of spellData.functions) {
+                        if (!f || !f.r) continue;
+                        const hit = dist(worldX, worldY, f.x, f.y) < f.r;
+                        if (hit) {
+                            vscode.postMessage({
+                                command: 'jumpToCode',
+                                fileName: f.fileName,
+                                line: f.startLine || 1
+                            });
+                            break;
+                        }
+                    }
                 }
 
                 function draw() {
@@ -127,19 +187,20 @@ export function getWebviewContent() {
                 }
 
                 function drawConnections() {
-                    stroke(...C_CYAN, 80);
                     strokeWeight(1 / zoom); // 線幅もズームに合わせて補正
                     spellData.functions.forEach(f => {
+                        const palette = getPalette(f.fileName);
                         const targets = spellData.callGraph[f.name] || [];
                         targets.forEach(targetName => {
                             const targetFunc = spellData.functions.find(tf => tf.name === targetName);
                             if (targetFunc) {
+                                stroke(palette.base[0], palette.base[1], palette.base[2], 100);
                                 line(f.x, f.y, targetFunc.x, targetFunc.y);
                                 
                                 let p = (frameCount * 0.01) % 1;
                                 let px = lerp(f.x, targetFunc.x, p);
                                 let py = lerp(f.y, targetFunc.y, p);
-                                noStroke(); fill(...C_CYAN);
+                                noStroke(); fill(palette.glow[0], palette.glow[1], palette.glow[2]);
                                 ellipse(px, py, 6/zoom, 6/zoom);
                             }
                         });
@@ -147,19 +208,18 @@ export function getWebviewContent() {
                 }
 
                 function drawFunctionCircle(f) {
+                    const palette = getPalette(f.fileName);
                     push();
                     translate(f.x, f.y);
 
-                    // ベース円
-                    noFill(); stroke(...C_CYAN, 180); strokeWeight(3 / zoom);
-                    ellipse(0, 0, f.r * 2);
+                    drawMagicShape(f, palette);
 
                     // 装飾
-                    strokeWeight(1 / zoom); stroke(...C_CYAN, 60);
+                    strokeWeight(1 / zoom); stroke(palette.glow[0], palette.glow[1], palette.glow[2], 80);
                     push(); rotate(frameCount * 0.005); ellipse(0, 0, f.r * 1.9); pop();
 
                     // 変数
-                    if (f.variables) drawVariablesRing(f.variables, f.r * 0.75, 0.005);
+                    if (f.variables) drawVariablesRing(f.variables, f.r * 0.75, 0.005, palette);
 
                     // ロジックツリー (IF/Loop)
                     if (f.logicTree && f.logicTree.length > 0) {
@@ -169,13 +229,13 @@ export function getWebviewContent() {
                     }
 
                     // 名前
-                    fill(255); noStroke(); 
+                    fill(palette.glow[0], palette.glow[1], palette.glow[2]); noStroke(); 
                     textSize(14 / zoom + 12);
                     text(f.name, 0, f.r + 30);
                     pop();
                 }
 
-                function drawVariablesRing(vars, radius, speed) {
+                function drawVariablesRing(vars, radius, speed, palette) {
                     push(); rotate(frameCount * speed);
                     const angleStep = 0.25;
                     const startAngle = - (vars.length * angleStep * 2) / 2;
@@ -184,15 +244,35 @@ export function getWebviewContent() {
                         push(); rotate(angle); translate(0, -radius);
                         
                         noStroke(); let size = 8 / zoom;
-                        if (v.type === 'number') { fill(...C_CYAN); rect(0, -15, size, size); }
+                        if (v.type === 'number') { fill(palette.base[0], palette.base[1], palette.base[2]); rect(0, -15, size, size); }
                         else if (v.type === 'string') { fill(...C_MAGENTA); ellipse(0, -15, size, size); }
-                        else { fill(200); triangle(0, -18, -size/2, -12, size/2, -12); }
+                        else { fill(palette.dim[0], palette.dim[1], palette.dim[2]); triangle(0, -18, -size/2, -12, size/2, -12); }
 
-                        fill(...C_CYAN, 200); rotate(-PI/2); textSize(10 / zoom + 4);
+                        fill(palette.glow[0], palette.glow[1], palette.glow[2], 200); rotate(-PI/2); textSize(10 / zoom + 4);
                         text(v.name, 0, 0);
                         pop();
                     });
                     pop();
+                }
+
+                function drawMagicShape(f, palette) {
+                    const complexity = constrain(f.conditions || 0, 0, 24);
+                    let points = map(complexity, 0, 20, 30, 3);
+                    points = constrain(Math.floor(points), 3, 30);
+
+                    noFill();
+                    stroke(palette.base[0], palette.base[1], palette.base[2], 200);
+                    strokeWeight(3 / zoom);
+
+                    beginShape();
+                    for (let i = 0; i < points; i++) {
+                        let angle = TWO_PI / points * i;
+                        let r = f.r;
+                        if (complexity > 10 && i % 2 === 0) r *= 1.3;
+                        if (complexity > 15) r *= 1 + noise(frameCount * 0.01 + i) * 0.1;
+                        vertex(cos(angle) * r, sin(angle) * r);
+                    }
+                    endShape(CLOSE);
                 }
 
                 function drawLogicGroup(nodes, size) {
