@@ -2,7 +2,7 @@
 // Code Grimoire - Webview メインスクリプト (PixiJS + D3 Worker)
 // Phase 2: 3層同心円レイアウト + Summoning + Warm-up/Freeze
 // ============================================================
-import { Application, Graphics, Text, TextStyle, Container, FederatedPointerEvent } from 'pixi.js';
+import { Application, Graphics, Text, TextStyle, BitmapText, BitmapFont, Container, FederatedPointerEvent } from 'pixi.js';
 import { Viewport } from 'pixi-viewport';
 import type {
     ExtensionToWebviewMessage,
@@ -20,6 +20,15 @@ import type {
 // ─── VS Code API ────────────────────────────────────────
 // @ts-expect-error acquireVsCodeApi は Webview 内でのみ利用可能
 const vscode = acquireVsCodeApi();
+
+// ─── LOD (Level of Detail) ───────────────────────────────
+type LODLevel = 'far' | 'mid' | 'near';
+
+function getLODLevel(scale: number): LODLevel {
+    if (scale < 0.3) { return 'far'; }
+    if (scale < 1.2) { return 'mid'; }
+    return 'near';
+}
 
 // ─── 状態管理 ────────────────────────────────────────────
 interface AppState {
@@ -41,6 +50,8 @@ interface AppState {
     nodeOrder: string[];
     /** 現在の Rune モード */
     runeMode: RuneMode;
+    /** 現在の LOD レベル */
+    currentLOD: LODLevel;
 }
 
 const state: AppState = {
@@ -55,6 +66,7 @@ const state: AppState = {
     workerReady: false,
     nodeOrder: [],
     runeMode: 'default',
+    currentLOD: 'mid',
 };
 
 // ─── 色ユーティリティ ────────────────────────────────────
@@ -96,6 +108,72 @@ function getRingAlpha(ring: 'focus' | 'context' | 'global'): number {
     }
 }
 
+// ─── フォントヘルパー (ハイブリッド方式) ────────────────
+// ASCII のみ → BitmapText (GPU最適化), マルチバイト含む → 標準 Text (Canvas)
+
+const BITMAP_FONT_NAME = 'GrimoireASCII';
+let bitmapFontReady = false;
+
+/** ASCII文字のみかどうかを判定 */
+function isAsciiOnly(str: string): boolean {
+    // eslint-disable-next-line no-control-regex
+    return /^[\x00-\x7F]*$/.test(str);
+}
+
+/** BitmapFont をランタイム生成 (init で呼ぶ) */
+function installBitmapFont() {
+    BitmapFont.install({
+        name: BITMAP_FONT_NAME,
+        style: {
+            fontFamily: 'Consolas, "Courier New", monospace',
+            fontSize: 32,  // ベースサイズ (BitmapText 側でスケール)
+            fill: '#ffffff',
+        },
+        chars: [
+            ['a', 'z'],
+            ['A', 'Z'],
+            ['0', '9'],
+            [' ', '/'],   // ASCII 32-47: space !"#$%&'()*+,-./
+            [':', '@'],   // ASCII 58-64: :;<=>?@
+            ['[', '`'],   // ASCII 91-96: [\]^_`
+            ['{', '~'],   // ASCII 123-126: {|}~
+        ],
+        resolution: 2,
+        padding: 4,
+    });
+    bitmapFontReady = true;
+}
+
+/** 高速テキスト生成: ASCII → BitmapText, マルチバイト → Text */
+function createSmartText(
+    content: string,
+    options: { fontSize: number; fill: number | string; fontFamily?: string; align?: string; lineHeight?: number }
+): Text | BitmapText {
+    if (bitmapFontReady && isAsciiOnly(content) && !options.lineHeight) {
+        const bt = new BitmapText({
+            text: content,
+            style: {
+                fontFamily: BITMAP_FONT_NAME,
+                fontSize: options.fontSize,
+                fill: options.fill,
+                align: (options.align as 'left' | 'center' | 'right') || undefined,
+            },
+        });
+        return bt;
+    }
+    // フォールバック: Canvas Text (マルチバイト対応)
+    return new Text({
+        text: content,
+        style: new TextStyle({
+            fontSize: options.fontSize,
+            fill: options.fill,
+            fontFamily: options.fontFamily || 'Consolas, "Courier New", monospace',
+            align: (options.align as 'left' | 'center' | 'right') || undefined,
+            lineHeight: options.lineHeight,
+        }),
+    });
+}
+
 // ─── メッセージ送受信 ────────────────────────────────────
 function sendMessage(msg: WebviewToExtensionMessage) {
     vscode.postMessage(msg);
@@ -132,6 +210,7 @@ function initWorker() {
                         applyRings(msg.payload.rings);
                         renderGraph();
                         state.isLoading = false;
+                        stopParticleLoading();
                         updateStatusText();
                         // Viewport を初回はフォーカスノード中心に移動
                         if (state.focusNodeId) {
@@ -266,6 +345,7 @@ function summonNode(nodeId: string) {
     sendToWorker({ type: 'FOCUS', payload: { focusNodeId: nodeId } });
 
     state.isLoading = true;
+    startParticleLoading();
     updateStatusText();
 
     // Viewport をフォーカスノードへスムーズ移動
@@ -329,6 +409,9 @@ async function init() {
 
     document.body.appendChild(app.canvas as HTMLCanvasElement);
 
+    // BitmapFont をランタイム生成 (ASCII英数字用)
+    installBitmapFont();
+
     // ローディングオーバーレイを非表示にする
     hideLoadingOverlay();
 
@@ -391,14 +474,158 @@ async function init() {
         fpsText.position.set(window.innerWidth - 100, 16);
     });
 
+    // LOD: ズーム変更で LOD レベルが切り替わったら再描画
+    viewport.on('zoomed', () => {
+        const newLOD = getLODLevel(viewport.scaled);
+        if (newLOD !== state.currentLOD) {
+            state.currentLOD = newLOD;
+            renderGraph();
+        }
+    });
+
     // Worker 初期化
     initWorker();
+
+    // Particle Loading 初期化 & 開始
+    initParticleSystem();
+    startParticleLoading();
 
     // Rune UI 初期化
     initRuneUI();
 
     // 解析リクエスト
     sendMessage({ type: 'REQUEST_ANALYSIS' });
+}
+
+// ─── Particle Loading 演出 ──────────────────────────────
+// 解析中に中心へ向かって収束する光の粒子アニメーション
+
+interface Particle {
+    x: number;
+    y: number;
+    vx: number;
+    vy: number;
+    life: number;       // 0.0 〜 1.0
+    maxLife: number;
+    radius: number;
+    color: number;
+}
+
+const PARTICLE_COUNT = 120;
+const PARTICLE_COLORS = [0x00dcff, 0x4488ff, 0x66aaff, 0xaaddff, 0x2266cc];
+let particles: Particle[] = [];
+let particleContainer: Container;
+let particleGfx: Graphics;
+let particleAnimActive = false;
+let particleTickerFn: ((dt: any) => void) | null = null;
+
+function initParticleSystem() {
+    particleContainer = new Container();
+    particleContainer.alpha = 0;
+    viewport.addChild(particleContainer);
+
+    particleGfx = new Graphics();
+    particleContainer.addChild(particleGfx);
+}
+
+/** パーティクルを1つ生成（中心に向かって飛ぶ） */
+function spawnParticle(): Particle {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 300 + Math.random() * 500;
+    const speed = 0.5 + Math.random() * 1.5;
+    const life = 0.6 + Math.random() * 0.4;
+
+    return {
+        x: Math.cos(angle) * dist,
+        y: Math.sin(angle) * dist,
+        vx: -Math.cos(angle) * speed,
+        vy: -Math.sin(angle) * speed,
+        life: life,
+        maxLife: life,
+        radius: 1 + Math.random() * 2.5,
+        color: PARTICLE_COLORS[Math.floor(Math.random() * PARTICLE_COLORS.length)],
+    };
+}
+
+/** パーティクルアニメーション開始 */
+function startParticleLoading() {
+    if (particleAnimActive) { return; }
+    particleAnimActive = true;
+    particleContainer.alpha = 1;
+
+    // 初期粒子を生成
+    particles = [];
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+        particles.push(spawnParticle());
+    }
+
+    particleTickerFn = () => {
+        particleGfx.clear();
+        const dt = app.ticker.deltaTime * 0.016; // 正規化
+
+        for (let i = particles.length - 1; i >= 0; i--) {
+            const p = particles[i];
+
+            // 中心への吸引力
+            const dx = -p.x;
+            const dy = -p.y;
+            const distSq = dx * dx + dy * dy;
+            const dist = Math.sqrt(distSq) || 1;
+            const attraction = 0.3;
+            p.vx += (dx / dist) * attraction;
+            p.vy += (dy / dist) * attraction;
+
+            // 速度減衰
+            p.vx *= 0.98;
+            p.vy *= 0.98;
+
+            p.x += p.vx;
+            p.y += p.vy;
+            p.life -= dt * 0.6;
+
+            if (p.life <= 0 || dist < 8) {
+                // リスポーン
+                particles[i] = spawnParticle();
+                continue;
+            }
+
+            const alpha = (p.life / p.maxLife) * 0.8;
+            // グロー（大きめ半透明）
+            particleGfx.circle(p.x, p.y, p.radius * 3);
+            particleGfx.fill({ color: p.color, alpha: alpha * 0.15 });
+            // コア（小さめ明るい）
+            particleGfx.circle(p.x, p.y, p.radius);
+            particleGfx.fill({ color: 0xffffff, alpha: alpha * 0.9 });
+        }
+    };
+    app.ticker.add(particleTickerFn);
+}
+
+/** パーティクルアニメーション停止（フェードアウト） */
+function stopParticleLoading() {
+    if (!particleAnimActive) { return; }
+    particleAnimActive = false;
+
+    // フェードアウト
+    const fadeStart = performance.now();
+    const fadeDuration = 800;
+    const fadeOut = () => {
+        const elapsed = performance.now() - fadeStart;
+        const t = Math.min(elapsed / fadeDuration, 1);
+        particleContainer.alpha = 1 - t;
+        if (t < 1) {
+            requestAnimationFrame(fadeOut);
+        } else {
+            // 完全停止
+            if (particleTickerFn) {
+                app.ticker.remove(particleTickerFn);
+                particleTickerFn = null;
+            }
+            particleGfx.clear();
+            particles = [];
+        }
+    };
+    requestAnimationFrame(fadeOut);
 }
 
 // ─── 同心円ガイド描画 ────────────────────────────────────
@@ -450,6 +677,9 @@ function renderGraph() {
         const srcNode = graph.nodes.find(n => n.id === edge.source);
         const isTypeOnly = edge.kind === 'type-import';
 
+        // LOD Far: type-import エッジは完全スキップ
+        if (state.currentLOD === 'far' && isTypeOnly) { continue; }
+
         // Architecture Rune: 循環参照エッジを赤くハイライト
         const isCycleEdge = state.runeMode === 'architecture' &&
             cycleNodeIds.has(edge.source) && cycleNodeIds.has(edge.target);
@@ -460,8 +690,8 @@ function renderGraph() {
 
         if (isCycleEdge) {
             color = 0xff3333;
-            alpha = 0.8;
-            width = 3;
+            alpha = state.currentLOD === 'far' ? 0.5 : 0.8;
+            width = state.currentLOD === 'far' ? 1.5 : 3;
         } else if (state.runeMode === 'architecture' && cycleNodeIds.size > 0) {
             // Architecture モードで循環参照以外のエッジは薄く
             color = srcNode ? getNodeColor(srcNode) : 0x334466;
@@ -469,8 +699,14 @@ function renderGraph() {
             width = 0.5;
         } else {
             color = srcNode ? getNodeColor(srcNode) : 0x334466;
-            alpha = isTypeOnly ? 0.08 : 0.25;
-            width = isTypeOnly ? 0.5 : 1;
+            // LOD Far: エッジを薄く細く
+            if (state.currentLOD === 'far') {
+                alpha = 0.1;
+                width = 0.5;
+            } else {
+                alpha = isTypeOnly ? 0.08 : 0.25;
+                width = isTypeOnly ? 0.5 : 1;
+            }
         }
 
         edgeGfx.moveTo(srcPos.x, srcPos.y);
@@ -504,10 +740,51 @@ function createNodeGraphics(
     const baseColor = getNodeColor(node);
     const glowColor = getNodeGlowColor(node);
     const isFocus = ring === 'focus';
+    const lod = state.currentLOD;
 
     // ノードサイズ: 行数に応じたスケーリング (Focus は大きく)
     let nodeRadius = Math.max(12, Math.min(60, 8 + Math.sqrt(node.lineCount) * 3));
     if (isFocus) { nodeRadius *= 1.4; }
+
+    // ═══════════════════════════════════════════════════
+    // LOD: Far — ドットのみ (ラベル・グロー省略で高速)
+    // ═══════════════════════════════════════════════════
+    if (lod === 'far') {
+        const dot = new Graphics();
+        dot.circle(0, 0, Math.max(4, nodeRadius * 0.35));
+        dot.fill({ color: baseColor, alpha: 0.7 });
+        container.addChild(dot);
+
+        // Rune モード: 循環参照/セキュリティ/ホットスポットのドット色変更
+        if (state.runeMode === 'architecture' && node.inCycle) {
+            dot.tint = 0xff3333;
+            container.alpha = 1.0;
+        } else if (state.runeMode === 'security' && node.securityWarnings && node.securityWarnings.length > 0) {
+            dot.tint = 0xff8800;
+            container.alpha = 1.0;
+        } else if (state.runeMode === 'refactoring' && node.gitCommitCount && node.gitCommitCount > 0) {
+            const heat = Math.min(1.0, node.gitCommitCount / 30);
+            dot.tint = heat > 0.5 ? 0xff4400 : 0xffaa00;
+            container.alpha = 0.3 + heat * 0.7;
+        } else if (state.runeMode !== 'default') {
+            container.alpha = Math.max(0.1, getRingAlpha(ring) * 0.3);
+        }
+
+        // Focus ノードのみ小ラベル表示
+        if (isFocus) {
+            const miniLabel = createSmartText(node.label, { fontSize: 8, fill: glowColor });
+            miniLabel.anchor.set(0.5, 0);
+            miniLabel.position.set(0, Math.max(4, nodeRadius * 0.35) + 4);
+            container.addChild(miniLabel);
+        }
+
+        attachNodeInteraction(container, node, ring);
+        return container;
+    }
+
+    // ═══════════════════════════════════════════════════
+    // LOD: Mid & Near — フルノード描画
+    // ═══════════════════════════════════════════════════
 
     // 外周グロー
     const outerGfx = new Graphics();
@@ -532,29 +809,98 @@ function createNodeGraphics(
     gfx.stroke({ width: isFocus ? 3 : 2, color: baseColor, alpha: 0.8 });
     container.addChild(gfx);
 
-    // ラベル
-    const labelStyle = new TextStyle({
-        fontSize: Math.max(10, Math.min(14, nodeRadius * 0.8)),
-        fill: glowColor,
-        fontFamily: 'Consolas, "Courier New", monospace',
-        align: 'center',
-    });
-    const label = new Text({ text: node.label, style: labelStyle });
+    // ラベル (BitmapText ハイブリッド)
+    const labelFontSize = Math.max(10, Math.min(14, nodeRadius * 0.8));
+    const label = createSmartText(node.label, { fontSize: labelFontSize, fill: glowColor, align: 'center' });
     label.anchor.set(0.5, 0.5);
     label.position.set(0, nodeRadius + 16);
     container.addChild(label);
 
     // エクスポート数バッジ (Context 以上のみ)
+    let nextBadgeY = nodeRadius + 30;
     if (ring !== 'global' && node.exports.length > 0) {
-        const badgeStyle = new TextStyle({
-            fontSize: 9,
-            fill: 0xaabbcc,
-            fontFamily: 'Consolas, monospace',
-        });
-        const badge = new Text({ text: `${node.exports.length} exports`, style: badgeStyle });
+        const badge = createSmartText(`${node.exports.length} exports`, { fontSize: 9, fill: 0xaabbcc });
         badge.anchor.set(0.5, 0.5);
-        badge.position.set(0, nodeRadius + 30);
+        badge.position.set(0, nextBadgeY);
         container.addChild(badge);
+        nextBadgeY += 12;
+    }
+
+    // ═══════════════════════════════════════════════════
+    // LOD: Near — 詳細情報パネル (scale >= 1.2)
+    // ═══════════════════════════════════════════════════
+    if (lod === 'near') {
+        const detailLines: string[] = [];
+
+        // 行数
+        detailLines.push(`📝 ${node.lineCount} lines`);
+
+        // import 数 (受信エッジ数)
+        if (state.graph) {
+            const incomingCount = state.graph.edges.filter(e => e.target === node.id).length;
+            const outgoingCount = state.graph.edges.filter(e => e.source === node.id).length;
+            detailLines.push(`📥 ${incomingCount} in / 📤 ${outgoingCount} out`);
+        }
+
+        // エクスポートシンボル一覧 (先頭5件)
+        if (node.exports.length > 0) {
+            const exportNames = node.exports.slice(0, 5).map(e => e.name).join(', ');
+            const suffix = node.exports.length > 5 ? ` +${node.exports.length - 5}` : '';
+            detailLines.push(`⬡ ${exportNames}${suffix}`);
+        }
+
+        // 関数依存 (先頭3件)
+        if (node.functionDeps && node.functionDeps.length > 0) {
+            const funcNames = node.functionDeps.slice(0, 3).map(f => f.calleeName).join(', ');
+            const suffix = node.functionDeps.length > 3 ? ` +${node.functionDeps.length - 3}` : '';
+            detailLines.push(`⚡ calls: ${funcNames}${suffix}`);
+        }
+
+        // セキュリティ警告詳細
+        if (node.securityWarnings && node.securityWarnings.length > 0) {
+            for (const w of node.securityWarnings.slice(0, 3)) {
+                detailLines.push(`⚠ L${w.line}: ${w.kind}`);
+            }
+            if (node.securityWarnings.length > 3) {
+                detailLines.push(`  +${node.securityWarnings.length - 3} more warnings`);
+            }
+        }
+
+        // Git 情報
+        if (node.gitCommitCount && node.gitCommitCount > 0) {
+            detailLines.push(`🔥 ${node.gitCommitCount} commits`);
+            if (node.gitLastModified) {
+                detailLines.push(`📅 ${node.gitLastModified.substring(0, 10)}`);
+            }
+        }
+
+        if (detailLines.length > 0) {
+            // 背景パネル
+            const panelWidth = 180;
+            const lineHeight = 13;
+            const panelHeight = detailLines.length * lineHeight + 12;
+            const panelY = nextBadgeY + 6;
+
+            const panel = new Graphics();
+            panel.roundRect(-panelWidth / 2, panelY, panelWidth, panelHeight, 4);
+            panel.fill({ color: 0x0d1025, alpha: 0.85 });
+            panel.stroke({ width: 1, color: baseColor, alpha: 0.3 });
+            container.addChild(panel);
+
+            const detailStyle = new TextStyle({
+                fontSize: 9,
+                fill: 0x99aabb,
+                fontFamily: 'Consolas, monospace',
+                lineHeight: lineHeight,
+            });
+            const detailText = new Text({
+                text: detailLines.join('\n'),
+                style: detailStyle,
+            });
+            detailText.anchor.set(0.5, 0);
+            detailText.position.set(0, panelY + 6);
+            container.addChild(detailText);
+        }
     }
 
     // ─── Rune モード別オーバーレイ ───────────────────────
@@ -630,18 +976,30 @@ function createNodeGraphics(
         container.alpha = 0.2;
     }
 
+    attachNodeInteraction(container, node, ring, gfx, outerGfx);
+    return container;
+}
+
+/** ノードにインタラクションを付与する共通関数 */
+function attachNodeInteraction(
+    container: Container,
+    node: GraphNode,
+    ring: 'focus' | 'context' | 'global',
+    gfx?: Graphics,
+    outerGfx?: Graphics,
+) {
     // インタラクション: ホバー
     container.on('pointerover', () => {
         state.hoveredNodeId = node.id;
-        gfx.tint = 0xffffff;
-        outerGfx.alpha = 0.6;
+        if (gfx) { gfx.tint = 0xffffff; }
+        if (outerGfx) { outerGfx.alpha = 0.6; }
         container.alpha = 1.0;
     });
 
     container.on('pointerout', () => {
         if (state.hoveredNodeId === node.id) { state.hoveredNodeId = null; }
-        gfx.tint = 0xffffff;
-        outerGfx.alpha = 1;
+        if (gfx) { gfx.tint = 0xffffff; }
+        if (outerGfx) { outerGfx.alpha = 1; }
         container.alpha = getRingAlpha(ring);
     });
 
@@ -649,13 +1007,11 @@ function createNodeGraphics(
     // 右クリック or Alt+クリック = ファイルへジャンプ
     container.on('pointertap', (e: FederatedPointerEvent) => {
         if (e.altKey || e.button === 2) {
-            // ファイルへジャンプ
             sendMessage({
                 type: 'JUMP_TO_FILE',
                 payload: { filePath: node.filePath, line: 1 },
             });
         } else {
-            // Summoning
             summonNode(node.id);
         }
     });
@@ -668,8 +1024,6 @@ function createNodeGraphics(
             payload: { filePath: node.filePath, line: 1 },
         });
     });
-
-    return container;
 }
 
 /** ノードの種別とエクスポート数に応じた多角形の辺数を返す */
@@ -797,7 +1151,8 @@ function updateStatusText() {
         const cycleCount = g.circularDeps?.length || 0;
         const cycleInfo = state.runeMode === 'architecture' && cycleCount > 0
             ? ` | ⟳ ${cycleCount} cycles` : '';
-        statusText.text = `⟐ ${state.projectName} — ${g.nodes.length} files, ${g.edges.length} deps (${g.analysisTimeMs}ms) | Focus: ${focusLabel}${runeLabel}${cycleInfo}`;
+        const lodLabel = state.currentLOD !== 'mid' ? ` | LOD: ${state.currentLOD}` : '';
+        statusText.text = `⟐ ${state.projectName} — ${g.nodes.length} files, ${g.edges.length} deps (${g.analysisTimeMs}ms) | Focus: ${focusLabel}${runeLabel}${cycleInfo}${lodLabel}`;
     }
 }
 
