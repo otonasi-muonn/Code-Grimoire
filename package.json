@@ -2,14 +2,16 @@
   "name": "codegrimoire",
   "displayName": "CodeGrimoire",
   "description": "Convert code into a magical circle.",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "engines": {
-    "vscode": "^1.109.0"
+    "vscode": "^1.100.0"
   },
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onCommand:codegrimoire.openGrimoire"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -20,26 +22,28 @@
     ]
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "node esbuild.js --production",
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src",
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/acorn": "^4.0.6",
+    "@types/d3-force": "^3.0.10",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
-    "@types/vscode": "^1.109.0",
+    "@types/vscode": "^1.100.0",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",
+    "esbuild": "^0.24.0",
     "eslint": "^9.39.2",
-    "typescript": "^5.9.3",
     "typescript-eslint": "^8.54.0"
   },
   "dependencies": {
-    "acorn": "^8.15.0",
-    "acorn-loose": "^8.5.2"
+    "d3-force": "^3.0.0",
+    "pixi-viewport": "^6.0.3",
+    "pixi.js": "^8.6.6",
+    "typescript": "^5.9.3"
   }
 }

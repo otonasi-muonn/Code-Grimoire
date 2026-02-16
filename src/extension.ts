@@ -1,76 +1,171 @@
+// ============================================================
+// Code Grimoire - Extension 本体 (VS Code Extension Host)
+// ============================================================
 import * as vscode from 'vscode';
-// 作成する2つのモジュールをインポート
-import { analyzeCode } from './analyzer.js';
+import * as path from 'path';
+import { analyzeWorkspace } from './analyzer.js';
 import { getWebviewContent } from './webview.js';
+import type {
+    ExtensionToWebviewMessage,
+    WebviewToExtensionMessage,
+    DependencyGraph,
+} from './shared/types.js';
 
 export function activate(context: vscode.ExtensionContext) {
     let panel: vscode.WebviewPanel | undefined = undefined;
+    let cachedGraph: DependencyGraph | undefined = undefined;
 
-    // 1. 監視役: コードが変わるたびに解析を実行
-    // コマンド登録の外に出すことで、二重登録を防ぎます
-    vscode.workspace.onDidChangeTextDocument(event => {
-        if (panel && event.document === vscode.window.activeTextEditor?.document) {
-            const code = event.document.getText();
-            
-            // 脳（analyzer）に解析させる
-            const spellData = analyzeCode(code, event.document.uri.fsPath);
+    // ─── ワークスペースルート取得 ────────────────────────
+    const getWorkspaceRoot = (): string | undefined => {
+        return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    };
 
-            if (spellData) {
-                // 顔（webview）にデータを送る
-                panel.webview.postMessage({
-                    type: 'CAST_MANA',
-                    spellData: spellData
-                });
-            } else {
-                // 解析不能なエラー
-                panel.webview.postMessage({ type: 'BACKFIRE' });
-            }
+    // ─── 解析実行 & Webview へ送信 ──────────────────────
+    const runAnalysis = () => {
+        if (!panel) { return; }
+
+        const root = getWorkspaceRoot();
+        if (!root) {
+            sendMessage({ type: 'ANALYSIS_ERROR', payload: { message: 'No workspace folder open.' } });
+            return;
         }
-    }, null, context.subscriptions);
 
-    // 2. コマンド登録: 魔法陣を開く
-    let disposable = vscode.commands.registerCommand('codegrimoire.openGrimoire', () => {
+        try {
+            // Phase 1: Instant Structure（即時構造）
+            const packageJsonPath = path.join(root, 'package.json');
+            let projectName = path.basename(root);
+            try {
+                const pkg = require(packageJsonPath);
+                projectName = pkg.displayName || pkg.name || projectName;
+            } catch { /* package.json が無い場合は無視 */ }
+
+            // ファイル数の簡易カウント
+            sendMessage({
+                type: 'INSTANT_STRUCTURE',
+                payload: {
+                    projectName,
+                    rootPath: root,
+                    fileCount: 0, // 後で更新
+                },
+            });
+
+            // Phase 2: 完全なグラフ解析
+            const graph = analyzeWorkspace(root);
+            cachedGraph = graph;
+
+            // ファイル数を反映して再送
+            sendMessage({
+                type: 'INSTANT_STRUCTURE',
+                payload: {
+                    projectName,
+                    rootPath: root,
+                    fileCount: graph.nodes.length,
+                },
+            });
+
+            sendMessage({
+                type: 'GRAPH_DATA',
+                payload: graph,
+            });
+
+            console.log(`[Code Grimoire] Analysis complete: ${graph.nodes.length} nodes, ${graph.edges.length} edges (${graph.analysisTimeMs}ms)`);
+        } catch (err: any) {
+            console.error('[Code Grimoire] Analysis error:', err);
+            sendMessage({ type: 'ANALYSIS_ERROR', payload: { message: err.message || String(err) } });
+        }
+    };
+
+    // ─── 型安全なメッセージ送信 ──────────────────────────
+    const sendMessage = (msg: ExtensionToWebviewMessage) => {
+        panel?.webview.postMessage(msg);
+    };
+
+    // ─── ファイル変更の監視 → 自動再解析 ─────────────────
+    const watcher = vscode.workspace.createFileSystemWatcher('**/*.{ts,tsx,js,jsx}');
+    const debounceTimer = { handle: undefined as ReturnType<typeof setTimeout> | undefined };
+
+    const scheduleReanalysis = () => {
+        if (debounceTimer.handle) { clearTimeout(debounceTimer.handle); }
+        debounceTimer.handle = setTimeout(() => {
+            if (panel) { runAnalysis(); }
+        }, 1500); // 1.5秒のデバウンス
+    };
+
+    watcher.onDidChange(scheduleReanalysis);
+    watcher.onDidCreate(scheduleReanalysis);
+    watcher.onDidDelete(scheduleReanalysis);
+    context.subscriptions.push(watcher);
+
+    // ─── コマンド登録: 魔法陣を開く ──────────────────────
+    const disposable = vscode.commands.registerCommand('codegrimoire.openGrimoire', () => {
         if (panel) {
             panel.reveal(vscode.ViewColumn.Two);
-        } else {
-            panel = vscode.window.createWebviewPanel(
-                'grimoireView',
-                'Code Grimoire',
-                vscode.ViewColumn.Two,
-                { enableScripts: true }
-            );
+            return;
+        }
 
-            // 顔（webview）のHTMLを取得
-            panel.webview.html = getWebviewContent();
+        panel = vscode.window.createWebviewPanel(
+            'grimoireView',
+            'Code Grimoire',
+            vscode.ViewColumn.Two,
+            {
+                enableScripts: true,
+                retainContextWhenHidden: true,
+                localResourceRoots: [
+                    vscode.Uri.joinPath(context.extensionUri, 'out'),
+                    vscode.Uri.joinPath(context.extensionUri, 'media'),
+                ],
+            }
+        );
 
-            panel.webview.onDidReceiveMessage(async (message) => {
-                if (message.command === 'jumpToCode' && message.fileName && panel) {
+        // Webview にスクリプトの URI を渡してHTMLを生成
+        const webviewScriptUri = panel.webview.asWebviewUri(
+            vscode.Uri.joinPath(context.extensionUri, 'out', 'webview', 'main.js')
+        );
+        const workerScriptUri = panel.webview.asWebviewUri(
+            vscode.Uri.joinPath(context.extensionUri, 'out', 'webview', 'worker.js')
+        );
+        panel.webview.html = getWebviewContent(panel.webview, webviewScriptUri, workerScriptUri);
+
+        // ─── Webview → Extension メッセージ受信 ─────────
+        panel.webview.onDidReceiveMessage(async (message: WebviewToExtensionMessage) => {
+            switch (message.type) {
+                case 'JUMP_TO_FILE': {
                     try {
-                        const targetUri = vscode.Uri.file(message.fileName);
+                        const targetUri = vscode.Uri.file(message.payload.filePath);
                         const doc = await vscode.workspace.openTextDocument(targetUri);
-                        const editor = await vscode.window.showTextDocument(doc);
-                        const line = Math.max((message.line || 1) - 1, 0);
+                        const editor = await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+                        const line = Math.max((message.payload.line || 1) - 1, 0);
                         const range = new vscode.Range(line, 0, line, 0);
                         editor.selection = new vscode.Selection(range.start, range.end);
                         editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
                     } catch (err) {
-                        console.error('Jump failed', err);
+                        console.error('[Code Grimoire] Jump failed:', err);
                         vscode.window.showErrorMessage('Failed to jump to code location.');
                     }
+                    break;
                 }
-            }, undefined, context.subscriptions);
-
-            // 開いた瞬間に現在のコードを解析して表示
-            const editor = vscode.window.activeTextEditor;
-            if (editor) {
-                const spellData = analyzeCode(editor.document.getText(), editor.document.uri.fsPath);
-                if (spellData) {
-                    panel.webview.postMessage({ type: 'CAST_MANA', spellData });
+                case 'FOCUS_NODE': {
+                    // Summoning: フォーカスノード変更の通知を受信
+                    console.log('[Code Grimoire] Focus node:', message.payload.nodeId);
+                    // 現時点では Worker 側で完結するのでログのみ
+                    // 将来的にフォーカス中心の再解析を実装可能
+                    break;
+                }
+                case 'REQUEST_ANALYSIS': {
+                    runAnalysis();
+                    break;
                 }
             }
+        }, undefined, context.subscriptions);
 
-            panel.onDidDispose(() => { panel = undefined; }, null, context.subscriptions);
-        }
+        // パネルが閉じられたときのクリーンアップ
+        panel.onDidDispose(() => {
+            panel = undefined;
+            cachedGraph = undefined;
+        }, null, context.subscriptions);
+
+        // 初回解析の実行
+        runAnalysis();
     });
 
     context.subscriptions.push(disposable);

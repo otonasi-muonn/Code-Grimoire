@@ -6,7 +6,22 @@
 		{
 			"type": "npm",
 			"script": "watch",
-			"problemMatcher": "$tsc-watch",
+			"problemMatcher": {
+				"owner": "esbuild",
+				"fileLocation": ["relative", "${workspaceFolder}"],
+				"pattern": {
+					"regexp": "^✘ \\[ERROR\\] (.+?)\\n\\n\\s+(.+?):(\\d+):(\\d+):",
+					"file": 2,
+					"line": 3,
+					"column": 4,
+					"message": 1
+				},
+				"background": {
+					"activeOnStart": true,
+					"beginsPattern": "^\\[esbuild\\] Watching",
+					"endsPattern": "^\\[esbuild\\]"
+				}
+			},
 			"isBackground": true,
 			"presentation": {
 				"reveal": "never"

@@ -1,158 +1,378 @@
-import * as acornLoose from 'acorn-loose';
+// ============================================================
+// Code Grimoire - TypeScript Compiler API ベースの解析エンジン
+// ============================================================
+import * as ts from 'typescript';
+import * as path from 'path';
+import * as fs from 'fs';
+import type {
+    DependencyGraph,
+    GraphNode,
+    GraphEdge,
+    SymbolInfo,
+    NodeKind,
+    EdgeKind,
+} from './shared/types.js';
 
-export interface SpellData {
-    functions: any[];
-    callGraph: Record<string, string[]>;
-}
+// ─── Public API ─────────────────────────────────────────
 
-export function analyzeCode(code: string, filePath?: string): SpellData | null {
-    try {
-        // locations: true で行番号や文字位置を正確に取得
-        const ast = acornLoose.parse(code, { ecmaVersion: 2020, locations: true });
-        return extractSpellData(ast, code, filePath);
-    } catch (e) {
-        console.error("Parsing failed:", e);
-        return null;
+/**
+ * ワークスペースルートから tsconfig.json を自動検出し、
+ * TS Compiler API でファイル依存グラフを解析する。
+ */
+export function analyzeWorkspace(workspaceRoot: string): DependencyGraph {
+    const startTime = performance.now();
+
+    // 1. tsconfig.json の自動検出
+    const tsconfigPath = findTsConfig(workspaceRoot);
+    if (!tsconfigPath) {
+        // tsconfig が無い場合は workspaceRoot 配下の .ts ファイルを直接解析
+        return analyzeFiles(workspaceRoot, getSourceFiles(workspaceRoot), startTime);
     }
-}
 
-function extractSpellData(ast: any, sourceCode: string, filePath?: string): SpellData {
-    const functions: any[] = [];
+    // 2. tsconfig.json を読み込んでプログラム生成
+    const configFile = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+    if (configFile.error) {
+        console.error('tsconfig read error:', ts.flattenDiagnosticMessageText(configFile.error.messageText, '\n'));
+        return emptyGraph(workspaceRoot, startTime);
+    }
 
-    // ソースコードから生のテキスト（条件式など）を切り出す魔法
-    const getSourceText = (node: any) => {
-        if (node.start !== undefined && node.end !== undefined) {
-            return sourceCode.substring(node.start, node.end);
-        }
-        return "???";
-    };
+    // Project References パターン対応:
+    // "files": [] + "references": [...] の場合、子 tsconfig を結合して解析する
+    const config = configFile.config;
+    const hasEmptyFiles = Array.isArray(config.files) && config.files.length === 0;
+    const hasReferences = Array.isArray(config.references) && config.references.length > 0;
+    const hasNoInclude = !config.include;
 
-    // 変数の初期値から型を推測
-    const inferType = (initNode: any) => {
-        if (!initNode) return 'unknown';
-        if (initNode.type === 'Literal') {
-            if (typeof initNode.value === 'number') return 'number';
-            if (typeof initNode.value === 'string') return 'string';
-            if (typeof initNode.value === 'boolean') return 'boolean';
-        }
-        return 'expression';
-    };
+    if (hasEmptyFiles && hasReferences && hasNoInclude) {
+        return analyzeProjectReferences(tsconfigPath, config.references, workspaceRoot, startTime);
+    }
 
-    // ネスト構造（IF/Loop）を再帰的に解析する
-    const buildLogicTree = (startNode: any) => {
-        const tree: any[] = [];
-        
-        const scan = (nodes: any[]) => {
-            if(!Array.isArray(nodes)) nodes = [nodes];
-            nodes.forEach(node => {
-                if(!node) return;
-                if (node.type === 'IfStatement') {
-                    // ここで条件式（i % 3 === 0 など）をテキストとして取得
-                    const testText = getSourceText(node.test); 
-                    const childLogic = buildLogicTree(node.consequent);
-                    if (node.alternate) childLogic.push(...buildLogicTree(node.alternate));
-                    
-                    tree.push({ type: 'if', condition: testText, children: childLogic });
-                } 
-                else if (['ForStatement', 'WhileStatement'].includes(node.type)) {
-                    tree.push({ type: 'loop', children: buildLogicTree(node.body) });
-                }
-                else if (node.type === 'BlockStatement') {
-                    tree.push(...buildLogicTree(node.body));
-                }
-            });
-        };
+    const parsedConfig = ts.parseJsonConfigFileContent(
+        configFile.config,
+        ts.sys,
+        path.dirname(tsconfigPath)
+    );
 
-        if (startNode.body) scan(startNode.body);
-        else if (Array.isArray(startNode)) scan(startNode);
-        return tree;
-    };
-
-    // ウォーカー関数
-    const walk = (node: any, cb: (n: any) => void) => {
-        if (!node || typeof node !== 'object') return;
-        cb(node);
-        for (const key in node) {
-            if (Object.prototype.hasOwnProperty.call(node, key)) {
-                const child = node[key];
-                if (Array.isArray(child)) child.forEach(c => walk(c, cb));
-                else if (child && typeof child === 'object') walk(child, cb);
-            }
-        }
-    };
-
-    // 条件分岐やループの数をざっくりカウント
-    const countConditions = (node: any) => {
-        let count = 0;
-        walk(node, (n) => {
-            if (!n || typeof n !== 'object') return;
-            if (['IfStatement', 'ConditionalExpression'].includes(n.type)) count++;
-            if (['ForStatement', 'WhileStatement', 'DoWhileStatement', 'ForInStatement', 'ForOfStatement', 'SwitchStatement'].includes(n.type)) count++;
-            if (n.type === 'LogicalExpression' && ['&&', '||'].includes(n.operator)) count++;
-        });
-        return count;
-    };
-
-    // 関数抽出メインロジック
-    const findFunctions = (root: any) => {
-        walk(root, (n) => {
-            const isFunc = n && ['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'].includes(n.type);
-            const isVarFunc = n.type === 'VariableDeclarator' && n.init && ['FunctionExpression', 'ArrowFunctionExpression'].includes(n.init.type);
-            
-            if (isFunc || isVarFunc) {
-                let fnNode = isVarFunc ? n.init : n;
-                
-                // 名前解決
-                let name = 'anonymous';
-                if (isVarFunc && n.id?.name) name = n.id.name;
-                else if (fnNode.id?.name) name = fnNode.id.name;
-
-                const start = fnNode.loc?.start?.line || 0;
-                const end = fnNode.loc?.end?.line || 0;
-                
-                const stats: any = {
-                    name,
-                    lineCount: (start && end) ? (end - start + 1) : 10,
-                    variables: [],
-                    calls: [],
-                    logicTree: buildLogicTree(fnNode.body || fnNode), // ロジックツリー生成
-                    fileName: filePath || 'unknown',
-                    startLine: start,
-                    endLine: end,
-                    conditions: 0
-                };
-
-                stats.conditions = countConditions(fnNode.body || fnNode);
-
-                // 内部スキャン
-                walk(fnNode.body || fnNode, (m) => {
-                    // 変数定義
-                    if (m.type === 'VariableDeclarator' && m.id?.name) {
-                        stats.variables.push({
-                            name: m.id.name,
-                            type: inferType(m.init)
-                        });
-                    }
-                    // 呼び出し
-                    if (m.type === 'CallExpression') {
-                         // 簡易的な呼び出し名取得
-                        let cName = 'unknown';
-                        if(m.callee.type === 'Identifier') cName = m.callee.name;
-                        else if(m.callee.property?.name) cName = m.callee.property.name;
-                        stats.calls.push({ name: cName });
-                    }
-                });
-                functions.push(stats);
-            }
-        });
-    };
-
-    findFunctions(ast);
-
-    const callGraph: Record<string, string[]> = {};
-    functions.forEach(f => {
-        callGraph[f.name] = f.calls.map((c: any) => c.name);
+    const program = ts.createProgram({
+        rootNames: parsedConfig.fileNames,
+        options: parsedConfig.options,
     });
 
-    return { functions, callGraph };
+    // 3. グラフの構築
+    return buildGraph(program, workspaceRoot, startTime);
+}
+
+// ─── Project References パターン対応 ────────────────────
+
+function analyzeProjectReferences(
+    tsconfigPath: string,
+    references: Array<{ path: string }>,
+    workspaceRoot: string,
+    startTime: number
+): DependencyGraph {
+    const tsconfigDir = path.dirname(tsconfigPath);
+    const allFileNames: string[] = [];
+    let mergedOptions: ts.CompilerOptions = {};
+
+    for (const ref of references) {
+        const refPath = path.resolve(tsconfigDir, ref.path);
+        const refConfigPath = fs.statSync(refPath).isDirectory()
+            ? path.join(refPath, 'tsconfig.json')
+            : refPath;
+
+        if (!fs.existsSync(refConfigPath)) { continue; }
+
+        const refConfigFile = ts.readConfigFile(refConfigPath, ts.sys.readFile);
+        if (refConfigFile.error) { continue; }
+
+        const parsed = ts.parseJsonConfigFileContent(
+            refConfigFile.config,
+            ts.sys,
+            path.dirname(refConfigPath)
+        );
+
+        allFileNames.push(...parsed.fileNames);
+        // 最初に見つかった参照の options をベースにする
+        if (Object.keys(mergedOptions).length === 0) {
+            mergedOptions = parsed.options;
+        }
+    }
+
+    if (allFileNames.length === 0) {
+        // 子 tsconfig にもファイルがない場合はフォールバック
+        return analyzeFiles(workspaceRoot, getSourceFiles(workspaceRoot), startTime);
+    }
+
+    // 重複除去
+    const uniqueFileNames = [...new Set(allFileNames)];
+
+    const program = ts.createProgram({
+        rootNames: uniqueFileNames,
+        options: mergedOptions,
+    });
+
+    return buildGraph(program, workspaceRoot, startTime);
+}
+
+// ─── tsconfig 自動検出 ──────────────────────────────────
+
+function findTsConfig(root: string): string | undefined {
+    const candidate = ts.findConfigFile(root, ts.sys.fileExists, 'tsconfig.json');
+    return candidate;
+}
+
+// ─── tsconfig が無い場合のフォールバック ─────────────────
+
+function getSourceFiles(root: string): string[] {
+    const files: string[] = [];
+    const walk = (dir: string) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+                if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'out') {
+                    continue;
+                }
+                walk(full);
+            } else if (/\.(ts|tsx)$/.test(entry.name) && !entry.name.endsWith('.d.ts')) {
+                files.push(full);
+            }
+        }
+    };
+    walk(root);
+    return files;
+}
+
+function analyzeFiles(root: string, files: string[], startTime: number): DependencyGraph {
+    const program = ts.createProgram({
+        rootNames: files,
+        options: {
+            target: ts.ScriptTarget.ES2022,
+            module: ts.ModuleKind.Node16,
+            allowJs: true,
+        },
+    });
+    return buildGraph(program, root, startTime);
+}
+
+// ─── グラフ構築のコアロジック ────────────────────────────
+
+function buildGraph(program: ts.Program, workspaceRoot: string, startTime: number): DependencyGraph {
+    const checker = program.getTypeChecker();
+    const nodes: Map<string, GraphNode> = new Map();
+    const edges: GraphEdge[] = [];
+
+    const normalizeFilePath = (filePath: string): string => {
+        return path.normalize(filePath).replace(/\\/g, '/');
+    };
+
+    const getRelativePath = (filePath: string): string => {
+        return path.relative(workspaceRoot, filePath).replace(/\\/g, '/');
+    };
+
+    const getNodeKind = (sourceFile: ts.SourceFile): NodeKind => {
+        const fileName = sourceFile.fileName;
+        if (fileName.endsWith('.d.ts')) { return 'declaration'; }
+        if (fileName.includes('node_modules')) { return 'external'; }
+        return 'source';
+    };
+
+    // ソースファイルを走査してノードを登録
+    for (const sourceFile of program.getSourceFiles()) {
+        const filePath = normalizeFilePath(sourceFile.fileName);
+
+        // node_modules は除外（外部参照先としてのみ記録）
+        if (filePath.includes('node_modules')) { continue; }
+
+        const lineCount = sourceFile.getLineAndCharacterOfPosition(sourceFile.getEnd()).line + 1;
+
+        // エクスポートされたシンボルを収集
+        const exports = collectExports(sourceFile, checker);
+
+        const node: GraphNode = {
+            id: filePath,
+            label: path.basename(sourceFile.fileName),
+            filePath,
+            relativePath: getRelativePath(sourceFile.fileName),
+            kind: getNodeKind(sourceFile),
+            exports,
+            lineCount,
+        };
+
+        nodes.set(filePath, node);
+
+        // import文を走査してエッジを生成
+        collectImportEdges(sourceFile, program, filePath, normalizeFilePath, edges);
+    }
+
+    const analysisTimeMs = Math.round(performance.now() - startTime);
+
+    return {
+        nodes: Array.from(nodes.values()),
+        edges,
+        rootPath: workspaceRoot,
+        analysisTimeMs,
+    };
+}
+
+// ─── エクスポートシンボルの収集 ──────────────────────────
+
+function collectExports(sourceFile: ts.SourceFile, checker: ts.TypeChecker): SymbolInfo[] {
+    const symbols: SymbolInfo[] = [];
+    const moduleSymbol = checker.getSymbolAtLocation(sourceFile);
+
+    if (!moduleSymbol) { return symbols; }
+
+    const exportedSymbols = checker.getExportsOfModule(moduleSymbol);
+
+    for (const sym of exportedSymbols) {
+        const decl = sym.declarations?.[0];
+        if (!decl) { continue; }
+
+        const line = sourceFile.getLineAndCharacterOfPosition(decl.getStart()).line + 1;
+        const isDefault = sym.getName() === 'default';
+
+        let kind: SymbolInfo['kind'] = 'other';
+        if (ts.isFunctionDeclaration(decl) || ts.isFunctionExpression(decl) || ts.isArrowFunction(decl) || ts.isMethodDeclaration(decl)) {
+            kind = 'function';
+        } else if (ts.isClassDeclaration(decl)) {
+            kind = 'class';
+        } else if (ts.isVariableDeclaration(decl)) {
+            kind = 'variable';
+        } else if (ts.isTypeAliasDeclaration(decl)) {
+            kind = 'type';
+        } else if (ts.isInterfaceDeclaration(decl)) {
+            kind = 'interface';
+        } else if (ts.isEnumDeclaration(decl)) {
+            kind = 'enum';
+        }
+
+        symbols.push({
+            name: sym.getName(),
+            kind,
+            line,
+            isDefault,
+        });
+    }
+
+    return symbols;
+}
+
+// ─── import エッジの収集 ──────────────────────────────────
+
+function collectImportEdges(
+    sourceFile: ts.SourceFile,
+    program: ts.Program,
+    sourceId: string,
+    normalize: (p: string) => string,
+    edges: GraphEdge[]
+): void {
+    const visit = (node: ts.Node) => {
+        // --- static import ---
+        if (ts.isImportDeclaration(node)) {
+            const moduleSpec = node.moduleSpecifier;
+            if (ts.isStringLiteral(moduleSpec)) {
+                const resolved = resolveModulePath(moduleSpec.text, sourceFile.fileName, program);
+                if (resolved) {
+                    const targetId = normalize(resolved);
+                    const importedSymbols = getImportedSymbolNames(node);
+                    const kind = getImportEdgeKind(node);
+                    edges.push({ source: sourceId, target: targetId, importedSymbols, kind });
+                }
+            }
+        }
+
+        // --- re-export: export { x } from '...' ---
+        if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+            const resolved = resolveModulePath(node.moduleSpecifier.text, sourceFile.fileName, program);
+            if (resolved) {
+                const targetId = normalize(resolved);
+                const importedSymbols = getReExportedSymbolNames(node);
+                edges.push({ source: sourceId, target: targetId, importedSymbols, kind: 're-export' });
+            }
+        }
+
+        // --- dynamic import: import('...') ---
+        if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+            const arg = node.arguments[0];
+            if (arg && ts.isStringLiteral(arg)) {
+                const resolved = resolveModulePath(arg.text, sourceFile.fileName, program);
+                if (resolved) {
+                    const targetId = normalize(resolved);
+                    edges.push({ source: sourceId, target: targetId, importedSymbols: [], kind: 'dynamic-import' });
+                }
+            }
+        }
+
+        ts.forEachChild(node, visit);
+    };
+
+    ts.forEachChild(sourceFile, visit);
+}
+
+// ─── ヘルパー関数群 ─────────────────────────────────────
+
+function resolveModulePath(
+    moduleName: string,
+    containingFile: string,
+    program: ts.Program
+): string | undefined {
+    const compilerOptions = program.getCompilerOptions();
+    const result = ts.resolveModuleName(moduleName, containingFile, compilerOptions, ts.sys);
+    return result.resolvedModule?.resolvedFileName;
+}
+
+function getImportedSymbolNames(node: ts.ImportDeclaration): string[] {
+    const symbols: string[] = [];
+    const clause = node.importClause;
+    if (!clause) { return symbols; } // side-effect import
+
+    // default import
+    if (clause.name) {
+        symbols.push(clause.name.text);
+    }
+
+    // named imports
+    const bindings = clause.namedBindings;
+    if (bindings) {
+        if (ts.isNamedImports(bindings)) {
+            for (const spec of bindings.elements) {
+                symbols.push(spec.name.text);
+            }
+        } else if (ts.isNamespaceImport(bindings)) {
+            symbols.push('* as ' + bindings.name.text);
+        }
+    }
+
+    return symbols;
+}
+
+function getReExportedSymbolNames(node: ts.ExportDeclaration): string[] {
+    const symbols: string[] = [];
+    if (node.exportClause && ts.isNamedExports(node.exportClause)) {
+        for (const spec of node.exportClause.elements) {
+            symbols.push(spec.name.text);
+        }
+    }
+    return symbols;
+}
+
+function getImportEdgeKind(node: ts.ImportDeclaration): EdgeKind {
+    if (node.importClause?.isTypeOnly) {
+        return 'type-import';
+    }
+    if (!node.importClause) {
+        return 'side-effect';
+    }
+    return 'static-import';
+}
+
+// ─── ユーティリティ ──────────────────────────────────────
+
+function emptyGraph(rootPath: string, startTime: number): DependencyGraph {
+    return {
+        nodes: [],
+        edges: [],
+        rootPath,
+        analysisTimeMs: Math.round(performance.now() - startTime),
+    };
 }

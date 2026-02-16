@@ -1,0 +1,26 @@
+{
+    "compilerOptions": {
+        "module": "ESNext",
+        "target": "ES2022",
+        "outDir": "out/webview",
+        "lib": [
+            "ES2022",
+            "DOM",
+            "DOM.Iterable"
+        ],
+        "moduleResolution": "bundler",
+        "sourceMap": true,
+        "strict": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "isolatedModules": true
+    },
+    "include": [
+        "src/webview/**/*",
+        "src/shared/**/*"
+    ],
+    "exclude": [
+        "node_modules",
+        "out"
+    ]
+}
