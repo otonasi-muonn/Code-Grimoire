@@ -155,6 +155,10 @@ export function activate(context: vscode.ExtensionContext) {
                     runAnalysis();
                     break;
                 }
+                case 'RUNE_MODE_CHANGE': {
+                    console.log('[Code Grimoire] Rune mode:', message.payload.mode);
+                    break;
+                }
             }
         }, undefined, context.subscriptions);
 

@@ -23,6 +23,20 @@ export interface GraphNode {
     lineCount: number;
     /** 同心円上のリング配置 (Phase 2で使用) */
     ring?: 'focus' | 'context' | 'global';
+
+    // ─── Phase 3: Intelligence ─────────────────────────
+    /** Git 変更回数 (commit 数) */
+    gitCommitCount?: number;
+    /** Git 最終更新日 (ISO 8601) */
+    gitLastModified?: string;
+    /** 循環参照を含むかどうか */
+    inCycle?: boolean;
+    /** ディレクトリグループ (Architecture Rune 用: e.g. "components", "hooks") */
+    directoryGroup?: string;
+    /** セキュリティ警告一覧 (Security Rune 用) */
+    securityWarnings?: SecurityWarning[];
+    /** 関数レベルのシンボル依存 (関数呼び出しグラフ用) */
+    functionDeps?: FunctionDep[];
 }
 
 /** シンボル情報 */
@@ -61,6 +75,56 @@ export type EdgeKind =
     | 'side-effect'       // import '...'
     | 're-export';        // export { x } from '...'
 
+// ─── Phase 3: Intelligence 型定義 ──────────────────────
+
+/** セキュリティ警告 */
+export interface SecurityWarning {
+    /** 警告の種類 */
+    kind: 'dangerous-function' | 'taint-source' | 'eval-usage' | 'innerHTML';
+    /** 該当行 */
+    line: number;
+    /** 説明 */
+    message: string;
+    /** 対象シンボル名 */
+    symbol: string;
+}
+
+/** 関数レベルの依存情報 */
+export interface FunctionDep {
+    /** 呼び出し元の関数名 */
+    callerName: string;
+    /** 呼び出し先のシンボル名 */
+    calleeName: string;
+    /** 呼び出し先が属するファイルID (外部ファイルの場合) */
+    targetFileId?: string;
+    /** 行番号 */
+    line: number;
+}
+
+/** 循環参照パス */
+export interface CircularDependency {
+    /** サイクルを構成するノードID群 (順序付き) */
+    path: string[];
+}
+
+/** Rune モード */
+export type RuneMode =
+    | 'default'          // 通常モード（Phase 2 の表示）
+    | 'architecture'     // 構造の紋章: 循環参照・モジュール境界
+    | 'security'         // セキュリティの紋章: Taint・危険関数
+    | 'optimization'     // 最適化の紋章: Tree-shaking スコア
+    | 'refactoring';     // 再生の紋章: Git Hotspot・テスト死角
+
+/** Git Hotspot 情報 */
+export interface GitHotspot {
+    /** ファイルの相対パス */
+    relativePath: string;
+    /** commit 数 */
+    commitCount: number;
+    /** 最終更新日 (ISO 8601) */
+    lastModified: string;
+}
+
 /** 解析結果グラフ全体 */
 export interface DependencyGraph {
     nodes: GraphNode[];
@@ -69,6 +133,12 @@ export interface DependencyGraph {
     rootPath: string;
     /** 解析にかかった時間 (ms) */
     analysisTimeMs: number;
+
+    // ─── Phase 3 ───────────────────────────────────────
+    /** 検出された循環参照一覧 */
+    circularDeps?: CircularDependency[];
+    /** Git Hotspot 一覧 */
+    gitHotspots?: GitHotspot[];
 }
 
 // ─── Extension -> Webview メッセージ ───────────────────
@@ -127,11 +197,20 @@ export interface MsgRequestAnalysis {
     type: 'REQUEST_ANALYSIS';
 }
 
+/** Rune モード切り替え (Webview 内部イベント、Extension に通知) */
+export interface MsgRuneModeChange {
+    type: 'RUNE_MODE_CHANGE';
+    payload: {
+        mode: RuneMode;
+    };
+}
+
 /** Webview → Extension に送信するメッセージの Union */
 export type WebviewToExtensionMessage =
     | MsgJumpToFile
     | MsgFocusNode
-    | MsgRequestAnalysis;
+    | MsgRequestAnalysis
+    | MsgRuneModeChange;
 
 // ─── バイナリプロトコル (Transferable Objects) ─────────
 

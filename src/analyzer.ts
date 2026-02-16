@@ -4,6 +4,7 @@
 import * as ts from 'typescript';
 import * as path from 'path';
 import * as fs from 'fs';
+import { execSync } from 'child_process';
 import type {
     DependencyGraph,
     GraphNode,
@@ -11,6 +12,10 @@ import type {
     SymbolInfo,
     NodeKind,
     EdgeKind,
+    SecurityWarning,
+    FunctionDep,
+    CircularDependency,
+    GitHotspot,
 } from './shared/types.js';
 
 // ─── Public API ─────────────────────────────────────────
@@ -198,11 +203,37 @@ function buildGraph(program: ts.Program, workspaceRoot: string, startTime: numbe
             lineCount,
         };
 
-        nodes.set(filePath, node);
-
         // import文を走査してエッジを生成
         collectImportEdges(sourceFile, program, filePath, normalizeFilePath, edges);
+
+        // Phase 3: ディレクトリグループ割り当て
+        const relPath = getRelativePath(sourceFile.fileName);
+        const parts = relPath.split('/');
+        node.directoryGroup = parts.length > 1 ? parts[parts.length - 2] : '(root)';
+
+        // Phase 3: セキュリティ警告検出
+        node.securityWarnings = collectSecurityWarnings(sourceFile);
+
+        // Phase 3: 関数レベル依存 (CallExpression 追跡)
+        node.functionDeps = collectFunctionDeps(sourceFile, program, filePath, normalizeFilePath);
+
+        nodes.set(filePath, node);
     }
+
+    // Phase 3: 循環参照検出
+    const circularDeps = detectCircularDependencies(nodes, edges);
+
+    // 循環参照フラグをノードに付与
+    const cycleNodeIds = new Set<string>();
+    for (const cycle of circularDeps) {
+        for (const id of cycle.path) { cycleNodeIds.add(id); }
+    }
+    for (const node of nodes.values()) {
+        node.inCycle = cycleNodeIds.has(node.id);
+    }
+
+    // Phase 3: Git Hotspot 統合
+    const gitHotspots = applyGitHotspots(nodes, workspaceRoot);
 
     const analysisTimeMs = Math.round(performance.now() - startTime);
 
@@ -211,6 +242,8 @@ function buildGraph(program: ts.Program, workspaceRoot: string, startTime: numbe
         edges,
         rootPath: workspaceRoot,
         analysisTimeMs,
+        circularDeps,
+        gitHotspots,
     };
 }
 
@@ -364,6 +397,316 @@ function getImportEdgeKind(node: ts.ImportDeclaration): EdgeKind {
         return 'side-effect';
     }
     return 'static-import';
+}
+
+// ─── Phase 3: セキュリティ警告検出 ──────────────────────
+
+/** 危険なパターンを検出する */
+const DANGEROUS_FUNCTIONS: Record<string, SecurityWarning['kind']> = {
+    'eval': 'eval-usage',
+    'Function': 'eval-usage',
+    'dangerouslySetInnerHTML': 'innerHTML',
+    'innerHTML': 'innerHTML',
+    'outerHTML': 'innerHTML',
+    'document.write': 'dangerous-function',
+    'document.writeln': 'dangerous-function',
+};
+
+/** Taint ソースとなる API 名 */
+const TAINT_SOURCES = new Set([
+    'req.body', 'req.query', 'req.params', 'req.headers',
+    'location.search', 'location.hash', 'location.href',
+    'document.cookie', 'localStorage', 'sessionStorage',
+    'window.name', 'postMessage',
+    'URLSearchParams', 'FormData',
+]);
+
+function collectSecurityWarnings(sourceFile: ts.SourceFile): SecurityWarning[] {
+    const warnings: SecurityWarning[] = [];
+
+    const visit = (node: ts.Node) => {
+        // CallExpression: eval(...), Function(...) 等
+        if (ts.isCallExpression(node)) {
+            const callText = node.expression.getText(sourceFile);
+            for (const [pattern, kind] of Object.entries(DANGEROUS_FUNCTIONS)) {
+                if (callText === pattern || callText.endsWith('.' + pattern)) {
+                    const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+                    warnings.push({ kind, line, message: `Dangerous: ${pattern}()`, symbol: pattern });
+                }
+            }
+
+            // Taint source 検出
+            for (const taint of TAINT_SOURCES) {
+                if (callText.includes(taint) || node.getText(sourceFile).includes(taint)) {
+                    const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+                    warnings.push({
+                        kind: 'taint-source',
+                        line,
+                        message: `Taint source: ${taint}`,
+                        symbol: taint,
+                    });
+                    break; // 1つの CallExpression に対して1つのみ
+                }
+            }
+        }
+
+        // PropertyAccessExpression: .innerHTML = ..., .dangerouslySetInnerHTML
+        if (ts.isPropertyAccessExpression(node)) {
+            const propName = node.name.text;
+            if (propName === 'innerHTML' || propName === 'outerHTML') {
+                // 代入のコンテキストにあるかチェック
+                if (node.parent && ts.isBinaryExpression(node.parent) &&
+                    node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+                    const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+                    warnings.push({
+                        kind: 'innerHTML',
+                        line,
+                        message: `Direct ${propName} assignment`,
+                        symbol: propName,
+                    });
+                }
+            }
+        }
+
+        // JSX: dangerouslySetInnerHTML
+        if (ts.isJsxAttribute(node) && ts.isIdentifier(node.name) && node.name.text === 'dangerouslySetInnerHTML') {
+            const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+            warnings.push({
+                kind: 'innerHTML',
+                line,
+                message: 'React dangerouslySetInnerHTML',
+                symbol: 'dangerouslySetInnerHTML',
+            });
+        }
+
+        ts.forEachChild(node, visit);
+    };
+
+    ts.forEachChild(sourceFile, visit);
+    return warnings;
+}
+
+// ─── Phase 3: 関数レベル依存 (CallExpression 追跡) ─────
+
+function collectFunctionDeps(
+    sourceFile: ts.SourceFile,
+    program: ts.Program,
+    sourceId: string,
+    normalize: (p: string) => string,
+): FunctionDep[] {
+    const deps: FunctionDep[] = [];
+    const checker = program.getTypeChecker();
+
+    /** 最も近い外側の関数/メソッド名を取得 */
+    function getEnclosingFunctionName(node: ts.Node): string {
+        let current = node.parent;
+        while (current) {
+            if (ts.isFunctionDeclaration(current) && current.name) {
+                return current.name.text;
+            }
+            if (ts.isMethodDeclaration(current) && ts.isIdentifier(current.name)) {
+                return current.name.text;
+            }
+            if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
+                // 変数宣言の名前を取得
+                if (current.parent && ts.isVariableDeclaration(current.parent) && ts.isIdentifier(current.parent.name)) {
+                    return current.parent.name.text;
+                }
+                // プロパティ代入の名前
+                if (current.parent && ts.isPropertyAssignment(current.parent) && ts.isIdentifier(current.parent.name)) {
+                    return current.parent.name.text;
+                }
+                return '(anonymous)';
+            }
+            current = current.parent;
+        }
+        return '(module)';
+    }
+
+    const visit = (node: ts.Node) => {
+        if (ts.isCallExpression(node)) {
+            let calleeName: string | undefined;
+            let targetFileId: string | undefined;
+
+            const expr = node.expression;
+
+            // 直接呼び出し: myFunc()
+            if (ts.isIdentifier(expr)) {
+                calleeName = expr.text;
+
+                // シンボルを解決してファイルを特定
+                try {
+                    const symbol = checker.getSymbolAtLocation(expr);
+                    const decl = symbol?.declarations?.[0];
+                    if (decl) {
+                        const declFile = decl.getSourceFile().fileName;
+                        const normalizedDecl = normalize(declFile);
+                        if (normalizedDecl !== sourceId && !declFile.includes('node_modules')) {
+                            targetFileId = normalizedDecl;
+                        }
+                    }
+                } catch { /* 解決失敗は無視 */ }
+            }
+
+            // メソッド呼び出し: obj.method()
+            if (ts.isPropertyAccessExpression(expr)) {
+                calleeName = expr.name.text;
+            }
+
+            if (calleeName) {
+                const callerName = getEnclosingFunctionName(node);
+                const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+                deps.push({ callerName, calleeName, targetFileId, line });
+            }
+        }
+
+        ts.forEachChild(node, visit);
+    };
+
+    ts.forEachChild(sourceFile, visit);
+    return deps;
+}
+
+// ─── Phase 3: 循環参照検出 (Tarjan's SCC) ──────────────
+
+function detectCircularDependencies(
+    nodes: Map<string, GraphNode>,
+    edges: GraphEdge[]
+): CircularDependency[] {
+    // 隣接リスト構築
+    const adj = new Map<string, string[]>();
+    for (const node of nodes.keys()) {
+        adj.set(node, []);
+    }
+    for (const edge of edges) {
+        if (adj.has(edge.source) && nodes.has(edge.target)) {
+            adj.get(edge.source)!.push(edge.target);
+        }
+    }
+
+    // Tarjan's SCC
+    let index = 0;
+    const stack: string[] = [];
+    const onStack = new Set<string>();
+    const indices = new Map<string, number>();
+    const lowlinks = new Map<string, number>();
+    const sccs: string[][] = [];
+
+    function strongConnect(v: string) {
+        indices.set(v, index);
+        lowlinks.set(v, index);
+        index++;
+        stack.push(v);
+        onStack.add(v);
+
+        for (const w of adj.get(v) || []) {
+            if (!indices.has(w)) {
+                strongConnect(w);
+                lowlinks.set(v, Math.min(lowlinks.get(v)!, lowlinks.get(w)!));
+            } else if (onStack.has(w)) {
+                lowlinks.set(v, Math.min(lowlinks.get(v)!, indices.get(w)!));
+            }
+        }
+
+        // SCC のルート
+        if (lowlinks.get(v) === indices.get(v)) {
+            const scc: string[] = [];
+            let w: string;
+            do {
+                w = stack.pop()!;
+                onStack.delete(w);
+                scc.push(w);
+            } while (w !== v);
+
+            // サイズ2以上のSCCのみ（= 実際の循環参照）
+            if (scc.length >= 2) {
+                sccs.push(scc);
+            }
+        }
+    }
+
+    for (const v of nodes.keys()) {
+        if (!indices.has(v)) {
+            strongConnect(v);
+        }
+    }
+
+    return sccs.map(path => ({ path }));
+}
+
+// ─── Phase 3: Git Hotspot ────────────────────────────────
+
+function collectGitHotspots(workspaceRoot: string): Map<string, GitHotspot> {
+    const hotspots = new Map<string, GitHotspot>();
+
+    try {
+        // git が使えるか & .git ディレクトリがあるか
+        if (!fs.existsSync(path.join(workspaceRoot, '.git'))) {
+            return hotspots;
+        }
+
+        // ファイルごとの commit 数を取得
+        // git log --format="%H" --name-only で commit hash + ファイル名を取得
+        const result = execSync(
+            'git log --format="---COMMIT---%aI" --name-only --diff-filter=ACDMR --no-renames -- "*.ts" "*.tsx" "*.js" "*.jsx"',
+            { cwd: workspaceRoot, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, timeout: 15000 }
+        );
+
+        let currentDate = '';
+        const fileDateMap = new Map<string, { count: number; lastDate: string }>();
+
+        for (const line of result.split('\n')) {
+            if (line.startsWith('---COMMIT---')) {
+                currentDate = line.replace('---COMMIT---', '').trim();
+                continue;
+            }
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.length === 0) { continue; }
+
+            // 相対パスを正規化
+            const relPath = trimmed.replace(/\\/g, '/');
+            const existing = fileDateMap.get(relPath);
+            if (existing) {
+                existing.count++;
+                // 最新の日付を保持
+                if (currentDate > existing.lastDate) {
+                    existing.lastDate = currentDate;
+                }
+            } else {
+                fileDateMap.set(relPath, { count: 1, lastDate: currentDate });
+            }
+        }
+
+        for (const [relPath, data] of fileDateMap) {
+            hotspots.set(relPath, {
+                relativePath: relPath,
+                commitCount: data.count,
+                lastModified: data.lastDate,
+            });
+        }
+    } catch (err) {
+        console.warn('[Code Grimoire] Git hotspot collection failed:', err);
+    }
+
+    return hotspots;
+}
+
+/** Git Hotspot をグラフノードに適用 */
+function applyGitHotspots(
+    nodes: Map<string, GraphNode>,
+    workspaceRoot: string
+): GitHotspot[] {
+    const hotspots = collectGitHotspots(workspaceRoot);
+
+    for (const node of nodes.values()) {
+        const hotspot = hotspots.get(node.relativePath);
+        if (hotspot) {
+            node.gitCommitCount = hotspot.commitCount;
+            node.gitLastModified = hotspot.lastModified;
+        }
+    }
+
+    return Array.from(hotspots.values());
 }
 
 // ─── ユーティリティ ──────────────────────────────────────

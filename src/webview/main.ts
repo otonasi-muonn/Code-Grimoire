@@ -14,6 +14,7 @@ import type {
     WorkerToMainMessage,
     WorkerNode,
     WorkerEdge,
+    RuneMode,
 } from '../shared/types.js';
 
 // ─── VS Code API ────────────────────────────────────────
@@ -38,6 +39,8 @@ interface AppState {
     workerReady: boolean;
     /** ノードID の順序配列（Worker 座標との対応用） */
     nodeOrder: string[];
+    /** 現在の Rune モード */
+    runeMode: RuneMode;
 }
 
 const state: AppState = {
@@ -51,6 +54,7 @@ const state: AppState = {
     focusNodeId: null,
     workerReady: false,
     nodeOrder: [],
+    runeMode: 'default',
 };
 
 // ─── 色ユーティリティ ────────────────────────────────────
@@ -390,6 +394,9 @@ async function init() {
     // Worker 初期化
     initWorker();
 
+    // Rune UI 初期化
+    initRuneUI();
+
     // 解析リクエスト
     sendMessage({ type: 'REQUEST_ANALYSIS' });
 }
@@ -428,16 +435,43 @@ function renderGraph() {
 
     // エッジ描画
     const edgeGfx = new Graphics();
+    const cycleNodeIds = new Set<string>();
+    if (state.graph?.circularDeps) {
+        for (const cycle of state.graph.circularDeps) {
+            for (const id of cycle.path) { cycleNodeIds.add(id); }
+        }
+    }
+
     for (const edge of graph.edges) {
         const srcPos = state.nodePositions.get(edge.source);
         const tgtPos = state.nodePositions.get(edge.target);
         if (!srcPos || !tgtPos) { continue; }
 
         const srcNode = graph.nodes.find(n => n.id === edge.source);
-        const color = srcNode ? getNodeColor(srcNode) : 0x334466;
         const isTypeOnly = edge.kind === 'type-import';
-        const alpha = isTypeOnly ? 0.08 : 0.25;
-        const width = isTypeOnly ? 0.5 : 1;
+
+        // Architecture Rune: 循環参照エッジを赤くハイライト
+        const isCycleEdge = state.runeMode === 'architecture' &&
+            cycleNodeIds.has(edge.source) && cycleNodeIds.has(edge.target);
+
+        let color: number;
+        let alpha: number;
+        let width: number;
+
+        if (isCycleEdge) {
+            color = 0xff3333;
+            alpha = 0.8;
+            width = 3;
+        } else if (state.runeMode === 'architecture' && cycleNodeIds.size > 0) {
+            // Architecture モードで循環参照以外のエッジは薄く
+            color = srcNode ? getNodeColor(srcNode) : 0x334466;
+            alpha = 0.08;
+            width = 0.5;
+        } else {
+            color = srcNode ? getNodeColor(srcNode) : 0x334466;
+            alpha = isTypeOnly ? 0.08 : 0.25;
+            width = isTypeOnly ? 0.5 : 1;
+        }
 
         edgeGfx.moveTo(srcPos.x, srcPos.y);
         edgeGfx.lineTo(tgtPos.x, tgtPos.y);
@@ -523,6 +557,79 @@ function createNodeGraphics(
         container.addChild(badge);
     }
 
+    // ─── Rune モード別オーバーレイ ───────────────────────
+
+    // Architecture Rune: 循環参照ノードに赤リング + ラベル
+    if (state.runeMode === 'architecture' && node.inCycle) {
+        const cycleRing = new Graphics();
+        cycleRing.circle(0, 0, nodeRadius + 10);
+        cycleRing.stroke({ width: 2, color: 0xff3333, alpha: 0.9 });
+        container.addChild(cycleRing);
+
+        const cycleLabel = new Text({
+            text: '⟳ cycle',
+            style: new TextStyle({ fontSize: 9, fill: 0xff5555, fontFamily: 'Consolas, monospace' }),
+        });
+        cycleLabel.anchor.set(0.5, 0.5);
+        cycleLabel.position.set(0, -(nodeRadius + 14));
+        container.addChild(cycleLabel);
+        container.alpha = 1.0; // 循環参照ノードは常に100%
+    } else if (state.runeMode === 'architecture' && !node.inCycle) {
+        container.alpha = Math.max(0.15, getRingAlpha(ring) * 0.4);
+    }
+
+    // Architecture Rune: ディレクトリグループ表示
+    if (state.runeMode === 'architecture' && node.directoryGroup) {
+        const dirLabel = new Text({
+            text: `📁 ${node.directoryGroup}`,
+            style: new TextStyle({ fontSize: 8, fill: 0x6688aa, fontFamily: 'Consolas, monospace' }),
+        });
+        dirLabel.anchor.set(0.5, 0.5);
+        dirLabel.position.set(0, nodeRadius + (ring !== 'global' && node.exports.length > 0 ? 42 : 30));
+        container.addChild(dirLabel);
+    }
+
+    // Security Rune: セキュリティ警告のあるノードをハイライト
+    if (state.runeMode === 'security' && node.securityWarnings && node.securityWarnings.length > 0) {
+        const warnRing = new Graphics();
+        warnRing.circle(0, 0, nodeRadius + 10);
+        warnRing.stroke({ width: 3, color: 0xff8800, alpha: 0.9 });
+        container.addChild(warnRing);
+
+        const warningCount = node.securityWarnings.length;
+        const warnLabel = new Text({
+            text: `⚠ ${warningCount} warning${warningCount > 1 ? 's' : ''}`,
+            style: new TextStyle({ fontSize: 9, fill: 0xffaa33, fontFamily: 'Consolas, monospace' }),
+        });
+        warnLabel.anchor.set(0.5, 0.5);
+        warnLabel.position.set(0, -(nodeRadius + 14));
+        container.addChild(warnLabel);
+        container.alpha = 1.0;
+    } else if (state.runeMode === 'security') {
+        container.alpha = Math.max(0.15, getRingAlpha(ring) * 0.4);
+    }
+
+    // Refactoring Rune: Git Hotspot (変更頻度の高いノードをオレンジ強調)
+    if (state.runeMode === 'refactoring' && node.gitCommitCount && node.gitCommitCount > 0) {
+        const heat = Math.min(1.0, node.gitCommitCount / 30); // 30 commits で最大
+        const heatColor = heat > 0.5 ? 0xff4400 : 0xffaa00;
+        const heatRing = new Graphics();
+        heatRing.circle(0, 0, nodeRadius + 6);
+        heatRing.fill({ color: heatColor, alpha: heat * 0.3 });
+        container.addChild(heatRing);
+
+        const hotLabel = new Text({
+            text: `🔥 ${node.gitCommitCount} commits`,
+            style: new TextStyle({ fontSize: 8, fill: heatColor, fontFamily: 'Consolas, monospace' }),
+        });
+        hotLabel.anchor.set(0.5, 0.5);
+        hotLabel.position.set(0, -(nodeRadius + 14));
+        container.addChild(hotLabel);
+        container.alpha = 0.3 + heat * 0.7;
+    } else if (state.runeMode === 'refactoring') {
+        container.alpha = 0.2;
+    }
+
     // インタラクション: ホバー
     container.on('pointerover', () => {
         state.hoveredNodeId = node.id;
@@ -577,6 +684,106 @@ function getNodeSides(node: GraphNode): number {
     return 6;
 }
 
+// ─── Rune UI (モード切り替えパネル) ─────────────────────
+
+interface RuneButton {
+    mode: RuneMode;
+    label: string;
+    icon: string;
+    color: number;
+}
+
+const RUNE_BUTTONS: RuneButton[] = [
+    { mode: 'default',       label: 'Default',       icon: '◇', color: 0x6696ff },
+    { mode: 'architecture',  label: 'Architecture',  icon: '⬡', color: 0x44bbff },
+    { mode: 'security',      label: 'Security',      icon: '⚠', color: 0xff8800 },
+    { mode: 'refactoring',   label: 'Refactoring',   icon: '🔥', color: 0xff4400 },
+];
+
+let runeContainer: Container;
+
+function initRuneUI() {
+    runeContainer = new Container();
+    runeContainer.position.set(16, 16);
+    uiContainer.addChild(runeContainer);
+
+    RUNE_BUTTONS.forEach((btn, i) => {
+        const btnContainer = new Container();
+        btnContainer.position.set(0, i * 36);
+        btnContainer.eventMode = 'static';
+        btnContainer.cursor = 'pointer';
+
+        // 背景
+        const bg = new Graphics();
+        bg.roundRect(0, 0, 140, 30, 6);
+        const isActive = state.runeMode === btn.mode;
+        bg.fill({ color: isActive ? btn.color : 0x151830, alpha: isActive ? 0.35 : 0.6 });
+        bg.stroke({ width: 1, color: btn.color, alpha: isActive ? 0.9 : 0.3 });
+        btnContainer.addChild(bg);
+
+        // テキスト
+        const text = new Text({
+            text: `${btn.icon} ${btn.label}`,
+            style: new TextStyle({
+                fontSize: 11,
+                fill: isActive ? 0xffffff : btn.color,
+                fontFamily: 'Consolas, monospace',
+            }),
+        });
+        text.position.set(8, 7);
+        btnContainer.addChild(text);
+
+        // クリックイベント
+        btnContainer.on('pointertap', () => {
+            state.runeMode = btn.mode;
+            sendMessage({ type: 'RUNE_MODE_CHANGE', payload: { mode: btn.mode } });
+            refreshRuneUI();
+            renderGraph();
+        });
+
+        runeContainer.addChild(btnContainer);
+    });
+}
+
+/** Rune ボタンの表示を更新 */
+function refreshRuneUI() {
+    runeContainer.removeChildren();
+    // 再描画（状態に基づく）
+    RUNE_BUTTONS.forEach((btn, i) => {
+        const btnContainer = new Container();
+        btnContainer.position.set(0, i * 36);
+        btnContainer.eventMode = 'static';
+        btnContainer.cursor = 'pointer';
+
+        const bg = new Graphics();
+        bg.roundRect(0, 0, 140, 30, 6);
+        const isActive = state.runeMode === btn.mode;
+        bg.fill({ color: isActive ? btn.color : 0x151830, alpha: isActive ? 0.35 : 0.6 });
+        bg.stroke({ width: 1, color: btn.color, alpha: isActive ? 0.9 : 0.3 });
+        btnContainer.addChild(bg);
+
+        const text = new Text({
+            text: `${btn.icon} ${btn.label}`,
+            style: new TextStyle({
+                fontSize: 11,
+                fill: isActive ? 0xffffff : btn.color,
+                fontFamily: 'Consolas, monospace',
+            }),
+        });
+        text.position.set(8, 7);
+        btnContainer.addChild(text);
+
+        btnContainer.on('pointertap', () => {
+            state.runeMode = btn.mode;
+            sendMessage({ type: 'RUNE_MODE_CHANGE', payload: { mode: btn.mode } });
+            refreshRuneUI();
+            renderGraph();
+        });
+
+        runeContainer.addChild(btnContainer);
+    });
+}
+
 // ─── UI ──────────────────────────────────────────────────
 function updateStatusText() {
     if (state.isLoading) {
@@ -586,7 +793,11 @@ function updateStatusText() {
         const focusLabel = state.focusNodeId
             ? state.graph?.nodes.find(n => n.id === state.focusNodeId)?.label || ''
             : '';
-        statusText.text = `⟐ ${state.projectName} — ${g.nodes.length} files, ${g.edges.length} deps (${g.analysisTimeMs}ms) | Focus: ${focusLabel} | Click=Summon | Alt+Click=Jump | Scroll=Zoom`;
+        const runeLabel = state.runeMode !== 'default' ? ` | Rune: ${state.runeMode}` : '';
+        const cycleCount = g.circularDeps?.length || 0;
+        const cycleInfo = state.runeMode === 'architecture' && cycleCount > 0
+            ? ` | ⟳ ${cycleCount} cycles` : '';
+        statusText.text = `⟐ ${state.projectName} — ${g.nodes.length} files, ${g.edges.length} deps (${g.analysisTimeMs}ms) | Focus: ${focusLabel}${runeLabel}${cycleInfo}`;
     }
 }
 
