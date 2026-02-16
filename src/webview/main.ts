@@ -31,6 +31,11 @@ function getLODLevel(scale: number): LODLevel {
 }
 
 // ─── 状態管理 ────────────────────────────────────────────
+interface BreadcrumbEntry {
+    nodeId: string;
+    label: string;
+}
+
 interface AppState {
     graph: DependencyGraph | null;
     projectName: string;
@@ -52,6 +57,8 @@ interface AppState {
     runeMode: RuneMode;
     /** 現在の LOD レベル */
     currentLOD: LODLevel;
+    /** 探索履歴 (Breadcrumbs) */
+    breadcrumbs: BreadcrumbEntry[];
 }
 
 const state: AppState = {
@@ -67,6 +74,7 @@ const state: AppState = {
     nodeOrder: [],
     runeMode: 'default',
     currentLOD: 'mid',
+    breadcrumbs: [],
 };
 
 // ─── 色ユーティリティ ────────────────────────────────────
@@ -336,6 +344,21 @@ function onGraphReceived() {
 function summonNode(nodeId: string) {
     if (state.focusNodeId === nodeId) { return; }
 
+    // 探索履歴に追加
+    const node = state.graph?.nodes.find(n => n.id === nodeId);
+    const label = node?.label || nodeId.split('/').pop() || nodeId;
+    // 既に履歴にある場合はその地点まで巻き戻し
+    const existingIdx = state.breadcrumbs.findIndex(b => b.nodeId === nodeId);
+    if (existingIdx >= 0) {
+        state.breadcrumbs = state.breadcrumbs.slice(0, existingIdx + 1);
+    } else {
+        state.breadcrumbs.push({ nodeId, label });
+        // 履歴上限: 最新12件
+        if (state.breadcrumbs.length > 12) {
+            state.breadcrumbs = state.breadcrumbs.slice(-12);
+        }
+    }
+
     state.focusNodeId = nodeId;
 
     // Extension にフォーカス変更を通知
@@ -347,6 +370,7 @@ function summonNode(nodeId: string) {
     state.isLoading = true;
     startParticleLoading();
     updateStatusText();
+    refreshBreadcrumbs();
 
     // Viewport をフォーカスノードへスムーズ移動
     const pos = state.nodePositions.get(nodeId);
@@ -472,6 +496,9 @@ async function init() {
         viewport.resize(window.innerWidth, window.innerHeight);
         statusText.position.set(16, window.innerHeight - 40);
         fpsText.position.set(window.innerWidth - 100, 16);
+        if (breadcrumbContainer) {
+            breadcrumbContainer.position.set(170, window.innerHeight - 70);
+        }
     });
 
     // LOD: ズーム変更で LOD レベルが切り替わったら再描画
@@ -492,6 +519,9 @@ async function init() {
 
     // Rune UI 初期化
     initRuneUI();
+
+    // Breadcrumbs 初期化
+    initBreadcrumbs();
 
     // 解析リクエスト
     sendMessage({ type: 'REQUEST_ANALYSIS' });
@@ -648,6 +678,76 @@ function drawRingGuides() {
     ringContainer.addChild(gfx);
 }
 
+// ─── Ghost Nodes (探索軌跡) ──────────────────────────────
+function drawGhostTrail() {
+    if (state.breadcrumbs.length < 2) { return; }
+
+    const ghostGfx = new Graphics();
+
+    // 過去のフォーカスノードを半透明の点で描画、点線で接続
+    const trail = state.breadcrumbs;
+    let prevPos: { x: number; y: number } | null = null;
+
+    for (let i = 0; i < trail.length; i++) {
+        const crumb = trail[i];
+        const pos = state.nodePositions.get(crumb.nodeId);
+        if (!pos) { prevPos = null; continue; }
+
+        const isCurrent = i === trail.length - 1;
+        const age = (trail.length - 1 - i) / trail.length; // 0=最新, 1=最古
+
+        if (!isCurrent) {
+            // Ghost ドット (半透明の残像)
+            const ghostAlpha = 0.15 + (1 - age) * 0.2;
+            ghostGfx.circle(pos.x, pos.y, 18 - age * 8);
+            ghostGfx.fill({ color: 0x44aaff, alpha: ghostAlpha * 0.4 });
+            ghostGfx.circle(pos.x, pos.y, 10 - age * 4);
+            ghostGfx.stroke({ width: 1.5, color: 0x44aaff, alpha: ghostAlpha });
+
+            // Ghost ラベル
+            const ghostLabel = createSmartText(crumb.label, {
+                fontSize: 8,
+                fill: 0x446688,
+            });
+            ghostLabel.anchor.set(0.5, 0.5);
+            ghostLabel.position.set(pos.x, pos.y - 20);
+            ghostLabel.alpha = 0.3 + (1 - age) * 0.3;
+            edgeContainer.addChild(ghostLabel);
+        }
+
+        // 点線で前のノードと接続
+        if (prevPos) {
+            const segments = 12;
+            const dx = pos.x - prevPos.x;
+            const dy = pos.y - prevPos.y;
+            for (let s = 0; s < segments; s++) {
+                // ダッシュ: 偶数セグメントのみ描画
+                if (s % 2 === 0) {
+                    const t1 = s / segments;
+                    const t2 = (s + 1) / segments;
+                    ghostGfx.moveTo(
+                        prevPos.x + dx * t1,
+                        prevPos.y + dy * t1,
+                    );
+                    ghostGfx.lineTo(
+                        prevPos.x + dx * t2,
+                        prevPos.y + dy * t2,
+                    );
+                    ghostGfx.stroke({
+                        width: 1.5,
+                        color: 0x3388bb,
+                        alpha: 0.2 + (1 - age) * 0.15,
+                    });
+                }
+            }
+        }
+        prevPos = pos;
+    }
+
+    // edgeContainer に追加 (ノードの下、エッジの上)
+    edgeContainer.addChild(ghostGfx);
+}
+
 // ─── グラフ描画 ──────────────────────────────────────────
 function renderGraph() {
     const graph = state.graph;
@@ -710,7 +810,20 @@ function renderGraph() {
         }
 
         edgeGfx.moveTo(srcPos.x, srcPos.y);
-        edgeGfx.lineTo(tgtPos.x, tgtPos.y);
+        // Edge Bundling: 二次ベジェ曲線で描画
+        // 制御点を中点から原点方向にオフセットしてバンドリング効果を生む
+        if (state.currentLOD === 'far') {
+            // Far LOD: 直線で高速描画
+            edgeGfx.lineTo(tgtPos.x, tgtPos.y);
+        } else {
+            const midX = (srcPos.x + tgtPos.x) / 2;
+            const midY = (srcPos.y + tgtPos.y) / 2;
+            // 原点方向への吸引係数 (0.0=直線, 1.0=原点経由)
+            const bundleStrength = 0.25;
+            const cpX = midX * (1 - bundleStrength);
+            const cpY = midY * (1 - bundleStrength);
+            edgeGfx.quadraticCurveTo(cpX, cpY, tgtPos.x, tgtPos.y);
+        }
         edgeGfx.stroke({ width, color, alpha });
     }
     edgeContainer.addChild(edgeGfx);
@@ -724,6 +837,9 @@ function renderGraph() {
         const nodeGfx = createNodeGraphics(node, pos, ring);
         nodeContainer.addChild(nodeGfx);
     }
+
+    // Ghost Nodes: 探索履歴の軌跡を描画
+    drawGhostTrail();
 }
 
 function createNodeGraphics(
@@ -976,6 +1092,37 @@ function createNodeGraphics(
         container.alpha = 0.2;
     }
 
+    // Optimization Rune: Tree-Shaking リスク + Barrel 検出
+    if (state.runeMode === 'optimization') {
+        const risk = node.treeShakingRisk || 0;
+        if (risk > 0) {
+            const riskNorm = risk / 100; // 0.0 ~ 1.0
+            const riskColor = risk >= 50 ? 0xff4444 : risk >= 25 ? 0xffaa22 : 0x44ff88;
+            const optRing = new Graphics();
+            optRing.circle(0, 0, nodeRadius + 8);
+            optRing.fill({ color: riskColor, alpha: riskNorm * 0.3 });
+            optRing.stroke({ width: 2, color: riskColor, alpha: 0.7 });
+            container.addChild(optRing);
+
+            // リスクラベル
+            const labels: string[] = [];
+            if (node.isBarrel) { labels.push('📦 barrel'); }
+            if (node.hasSideEffects) { labels.push('⚡ side-effect'); }
+            labels.push(`risk: ${risk}`);
+
+            const optLabel = new Text({
+                text: labels.join(' | '),
+                style: new TextStyle({ fontSize: 8, fill: riskColor, fontFamily: 'Consolas, monospace' }),
+            });
+            optLabel.anchor.set(0.5, 0.5);
+            optLabel.position.set(0, -(nodeRadius + 14));
+            container.addChild(optLabel);
+            container.alpha = 0.3 + riskNorm * 0.7;
+        } else {
+            container.alpha = Math.max(0.15, getRingAlpha(ring) * 0.4);
+        }
+    }
+
     attachNodeInteraction(container, node, ring, gfx, outerGfx);
     return container;
 }
@@ -1051,6 +1198,7 @@ const RUNE_BUTTONS: RuneButton[] = [
     { mode: 'default',       label: 'Default',       icon: '◇', color: 0x6696ff },
     { mode: 'architecture',  label: 'Architecture',  icon: '⬡', color: 0x44bbff },
     { mode: 'security',      label: 'Security',      icon: '⚠', color: 0xff8800 },
+    { mode: 'optimization',  label: 'Optimization',  icon: '⚡', color: 0x44ff88 },
     { mode: 'refactoring',   label: 'Refactoring',   icon: '🔥', color: 0xff4400 },
 ];
 
@@ -1136,6 +1284,77 @@ function refreshRuneUI() {
 
         runeContainer.addChild(btnContainer);
     });
+}
+
+// ─── Breadcrumbs (探索履歴パネル) ────────────────────────
+let breadcrumbContainer: Container;
+
+function initBreadcrumbs() {
+    breadcrumbContainer = new Container();
+    breadcrumbContainer.position.set(170, window.innerHeight - 70);
+    uiContainer.addChild(breadcrumbContainer);
+}
+
+function refreshBreadcrumbs() {
+    breadcrumbContainer.removeChildren();
+    if (state.breadcrumbs.length <= 1) { return; }
+
+    // 右端座標を基準に右から左へ配置
+    let xOffset = 0;
+    const crumbHeight = 22;
+    const maxLabelLen = 14;
+
+    for (let i = 0; i < state.breadcrumbs.length; i++) {
+        const crumb = state.breadcrumbs[i];
+        const isCurrent = i === state.breadcrumbs.length - 1;
+        const displayLabel = crumb.label.length > maxLabelLen
+            ? crumb.label.substring(0, maxLabelLen - 1) + '…'
+            : crumb.label;
+
+        // 区切り矢印 (最初以外)
+        if (i > 0) {
+            const arrow = createSmartText('›', { fontSize: 12, fill: 0x445588 });
+            arrow.anchor.set(0, 0.5);
+            arrow.position.set(xOffset, crumbHeight / 2);
+            breadcrumbContainer.addChild(arrow);
+            xOffset += 14;
+        }
+
+        // ラベルボタン
+        const btnC = new Container();
+        btnC.position.set(xOffset, 0);
+        btnC.eventMode = 'static';
+        btnC.cursor = 'pointer';
+
+        const labelColor = isCurrent ? 0x66ddff : 0x5588aa;
+        const bg = new Graphics();
+        const labelWidth = displayLabel.length * 7 + 12;
+        bg.roundRect(0, 0, labelWidth, crumbHeight, 4);
+        bg.fill({ color: isCurrent ? 0x1a2855 : 0x101530, alpha: 0.7 });
+        bg.stroke({ width: 1, color: labelColor, alpha: isCurrent ? 0.6 : 0.2 });
+        btnC.addChild(bg);
+
+        const text = createSmartText(displayLabel, { fontSize: 10, fill: labelColor });
+        text.anchor.set(0, 0.5);
+        text.position.set(6, crumbHeight / 2);
+        btnC.addChild(text);
+
+        // クリック: その地点に Summon
+        const crumbNodeId = crumb.nodeId;
+        btnC.on('pointertap', () => {
+            summonNode(crumbNodeId);
+        });
+
+        // ホバー
+        btnC.on('pointerover', () => { bg.alpha = 1.0; });
+        btnC.on('pointerout', () => { bg.alpha = 0.7; });
+
+        breadcrumbContainer.addChild(btnC);
+        xOffset += labelWidth + 4;
+    }
+
+    // 位置更新 (画面下部、ステータスバーの上)
+    breadcrumbContainer.position.set(170, window.innerHeight - 70);
 }
 
 // ─── UI ──────────────────────────────────────────────────

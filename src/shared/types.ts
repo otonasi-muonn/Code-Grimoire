@@ -37,6 +37,14 @@ export interface GraphNode {
     securityWarnings?: SecurityWarning[];
     /** 関数レベルのシンボル依存 (関数呼び出しグラフ用) */
     functionDeps?: FunctionDep[];
+
+    // ─── Phase 5: Optimization ─────────────────────────
+    /** Barrel ファイルかどうか (index.ts で re-export のみ) */
+    isBarrel?: boolean;
+    /** Tree-shaking リスクスコア (0-100, 高いほどリスク大) */
+    treeShakingRisk?: number;
+    /** 副作用インポートを含むか */
+    hasSideEffects?: boolean;
 }
 
 /** シンボル情報 */

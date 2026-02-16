@@ -232,6 +232,9 @@ function buildGraph(program: ts.Program, workspaceRoot: string, startTime: numbe
         node.inCycle = cycleNodeIds.has(node.id);
     }
 
+    // Phase 5: Optimization 解析 (Barrel 検出 + Tree-Shaking リスク)
+    applyOptimizationMetrics(nodes, edges);
+
     // Phase 3: Git Hotspot 統合
     const gitHotspots = applyGitHotspots(nodes, workspaceRoot);
 
@@ -632,6 +635,67 @@ function detectCircularDependencies(
     }
 
     return sccs.map(path => ({ path }));
+}
+
+// ─── Phase 5: Optimization 解析 ─────────────────────────
+
+/** Barrel ファイル検出 + Tree-Shaking リスクスコア計算 */
+function applyOptimizationMetrics(
+    nodes: Map<string, GraphNode>,
+    edges: GraphEdge[]
+) {
+    // エッジから各ノードの被参照数を集計
+    const incomingCount = new Map<string, number>();
+    const outgoingCount = new Map<string, number>();
+    const sideEffectImporters = new Set<string>();
+
+    for (const edge of edges) {
+        incomingCount.set(edge.target, (incomingCount.get(edge.target) || 0) + 1);
+        outgoingCount.set(edge.source, (outgoingCount.get(edge.source) || 0) + 1);
+        if (edge.kind === 'side-effect') {
+            sideEffectImporters.add(edge.source);
+        }
+    }
+
+    for (const node of nodes.values()) {
+        // ─── Barrel 検出 ──────────────────────────────
+        // index.ts/index.tsx で、re-export エッジが多く、自前のエクスポートが少ないファイル
+        const isIndexFile = /index\.(ts|tsx|js|jsx)$/.test(node.label);
+        const reExportCount = edges.filter(
+            e => e.source === node.id && e.kind === 're-export'
+        ).length;
+        const totalOutgoing = outgoingCount.get(node.id) || 0;
+        node.isBarrel = isIndexFile && reExportCount > 0 && reExportCount >= totalOutgoing * 0.5;
+
+        // ─── 副作用フラグ ─────────────────────────────
+        node.hasSideEffects = sideEffectImporters.has(node.id);
+
+        // ─── Tree-Shaking リスクスコア (0-100) ────────
+        // 高い = Tree-shaking で除去されにくい = バンドル肥大リスク
+        let risk = 0;
+
+        // 被参照数が多いほどリスク低 (よく使われている)
+        const incoming = incomingCount.get(node.id) || 0;
+        // エクスポート数と被参照数の比率
+        const exportCount = node.exports.length;
+        if (exportCount > 0 && incoming === 0) {
+            // エクスポートがあるのに誰からも参照されていない = 最大リスク
+            risk += 40;
+        }
+
+        // 副作用インポートを含む = tree-shake できない
+        if (node.hasSideEffects) { risk += 25; }
+
+        // Barrel ファイル = 巻き込みリスク
+        if (node.isBarrel) { risk += 20; }
+
+        // 行数が多いのにエクスポートが少ない = 大きなファイルが丸ごと残るリスク
+        if (node.lineCount > 200 && exportCount <= 2) {
+            risk += 15;
+        }
+
+        node.treeShakingRisk = Math.min(100, risk);
+    }
 }
 
 // ─── Phase 3: Git Hotspot ────────────────────────────────
