@@ -10,6 +10,7 @@ import type {
     WebviewToExtensionMessage,
     DependencyGraph,
 } from './shared/types.js';
+import * as fs from 'fs';
 
 export function activate(context: vscode.ExtensionContext) {
     let panel: vscode.WebviewPanel | undefined = undefined;
@@ -157,6 +158,43 @@ export function activate(context: vscode.ExtensionContext) {
                 }
                 case 'RUNE_MODE_CHANGE': {
                     console.log('[Code Grimoire] Rune mode:', message.payload.mode);
+                    break;
+                }
+                case 'CODE_PEEK_REQUEST': {
+                    const { filePath, maxLines } = message.payload;
+                    const lines = maxLines || 50;
+                    try {
+                        const content = fs.readFileSync(filePath, 'utf-8');
+                        const allLines = content.split('\n');
+                        const code = allLines.slice(0, lines).join('\n');
+                        const ext = path.extname(filePath).replace('.', '');
+                        const langMap: Record<string, string> = {
+                            ts: 'typescript', tsx: 'typescript',
+                            js: 'javascript', jsx: 'javascript',
+                            json: 'json', md: 'markdown',
+                            css: 'css', scss: 'scss', html: 'html',
+                        };
+                        sendMessage({
+                            type: 'CODE_PEEK_RESPONSE',
+                            payload: {
+                                filePath,
+                                code,
+                                totalLines: allLines.length,
+                                language: langMap[ext] || ext || 'plaintext',
+                            },
+                        });
+                    } catch (err: any) {
+                        console.error('[Code Grimoire] Code Peek error:', err);
+                        sendMessage({
+                            type: 'CODE_PEEK_RESPONSE',
+                            payload: {
+                                filePath,
+                                code: `// Error reading file: ${err.message || err}`,
+                                totalLines: 0,
+                                language: 'plaintext',
+                            },
+                        });
+                    }
                     break;
                 }
             }

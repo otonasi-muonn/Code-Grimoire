@@ -22,6 +22,7 @@ import type {
     WorkerNode,
     WorkerEdge,
     LayoutMode,
+    HierarchyEdge,
 } from '../shared/types.js';
 
 // ─── 定数 ────────────────────────────────────────────────
@@ -50,6 +51,8 @@ let edges: WorkerEdge[] = [];
 let nodeIndexMap: Map<string, number> = new Map();
 let currentLayoutMode: LayoutMode = 'force';
 let currentFocusNodeId: string | null = null;
+/** 最後に計算された階層エッジ (Tree/Balloon レイアウト時のみ) */
+let lastHierarchyEdges: HierarchyEdge[] = [];
 
 // ─── メッセージ受信 ──────────────────────────────────────
 self.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
@@ -164,6 +167,7 @@ function switchLayout(newMode: LayoutMode): void {
 
     if (newMode === 'force') {
         // Force に戻す場合: 現在の座標を初期値として再構築
+        lastHierarchyEdges = [];
         initForceSimulation(currentFocusNodeId);
     } else {
         // tree / balloon: 静的レイアウトへモーフィング
@@ -292,14 +296,87 @@ function calculateBalloonLayout(dirTree: DirTreeNode): Map<string, { x: number; 
     return result;
 }
 
-/** レイアウトモードに応じた静的座標を計算 */
+/** レイアウトモードに応じた静的座標を計算し、階層エッジも抽出する */
 function calculateStaticLayout(mode: LayoutMode): Map<string, { x: number; y: number }> {
     const dirTree = collapseTree(buildDirectoryTree());
-    if (mode === 'tree') {
-        return calculateTreeLayout(dirTree);
-    } else {
-        return calculateBalloonLayout(dirTree);
+
+    // 座標計算
+    const positions = mode === 'tree'
+        ? calculateTreeLayout(dirTree)
+        : calculateBalloonLayout(dirTree);
+
+    // 階層エッジ抽出: ディレクトリツリーの親子関係から、
+    // 葉ノード(ファイル)同士の「同じ親を持つ兄弟」および「親子」関係を復元
+    lastHierarchyEdges = extractHierarchyEdges(dirTree);
+
+    return positions;
+}
+
+/** ディレクトリツリーからファイルノード間の階層エッジを抽出 */
+function extractHierarchyEdges(root: DirTreeNode): HierarchyEdge[] {
+    const edges: HierarchyEdge[] = [];
+
+    const walk = (node: DirTreeNode, parentFileId: string | null) => {
+        const myFileId = node.nodeId || null;
+
+        // 親ファイルがあり、自分もファイルなら親子エッジ
+        if (parentFileId && myFileId) {
+            edges.push({ parent: parentFileId, child: myFileId });
+        }
+
+        // 子ノードを探索。自分がファイルならその ID を伝播、
+        // ディレクトリノードなら最も近い祖先ファイルを伝播
+        const propagateId = myFileId || parentFileId;
+
+        // 子ノードのうちファイルを持つもの同士で兄弟エッジは作らない
+        // (階層エッジのみ — 親→子)
+        for (const child of node.children) {
+            walk(child, propagateId);
+        }
+    };
+
+    // ルートからツリー全体を探索
+    // しかし、「親がディレクトリのみ（ファイルではない）」場合は
+    // 直下の全ファイルを「兄弟クラスタ」として接続する
+    const walkDir = (dir: DirTreeNode) => {
+        // dir 直下のファイルノード ID を収集
+        const childFileIds: string[] = [];
+        for (const child of dir.children) {
+            if (child.nodeId) {
+                childFileIds.push(child.nodeId);
+            }
+        }
+
+        // 兄弟ファイルをチェーン状に接続（星型よりも線が少なくて美しい）
+        for (let i = 1; i < childFileIds.length; i++) {
+            edges.push({ parent: childFileIds[i - 1], child: childFileIds[i] });
+        }
+
+        // サブディレクトリを再帰
+        for (const child of dir.children) {
+            if (child.children.length > 0) {
+                // サブディレクトリの代表ファイル（最初の葉）を見つけて接続
+                const subRepresentative = findFirstLeaf(child);
+                if (subRepresentative && childFileIds.length > 0) {
+                    edges.push({ parent: childFileIds[0], child: subRepresentative });
+                }
+                walkDir(child);
+            }
+        }
+    };
+
+    walkDir(root);
+    return edges;
+}
+
+/** ツリーの最初の葉ノード (ファイル) の ID を返す */
+function findFirstLeaf(node: DirTreeNode): string | null {
+    if (node.nodeId) { return node.nodeId; }
+    for (const child of node.children) {
+        const found = findFirstLeaf(child);
+        if (found) { return found; }
     }
+    return null;
 }
 
 /** 静的レイアウト座標を直接適用 */
@@ -441,7 +518,12 @@ function sendDone(): void {
 
     const msg: WorkerToMainMessage = {
         type: 'DONE',
-        payload: { positions, rings },
+        payload: {
+            positions,
+            rings,
+            // Smart Edges: Tree/Balloon レイアウト時のみ階層エッジを含める
+            hierarchyEdges: currentLayoutMode !== 'force' ? lastHierarchyEdges : undefined,
+        },
     };
 
     (self as any).postMessage(msg, [positions.buffer]);

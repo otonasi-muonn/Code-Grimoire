@@ -185,7 +185,8 @@ export interface MsgAnalysisError {
 export type ExtensionToWebviewMessage =
     | MsgInstantStructure
     | MsgGraphData
-    | MsgAnalysisError;
+    | MsgAnalysisError
+    | MsgCodePeekResponse;
 
 // ─── Webview -> Extension メッセージ ───────────────────
 
@@ -219,12 +220,37 @@ export interface MsgRuneModeChange {
     };
 }
 
+/** Code Peek: コードプレビューリクエスト (Webview → Extension) */
+export interface MsgCodePeekRequest {
+    type: 'CODE_PEEK_REQUEST';
+    payload: {
+        filePath: string;
+        /** 取得する最大行数 (デフォルト: 50) */
+        maxLines?: number;
+    };
+}
+
+/** Code Peek: コードプレビュー応答 (Extension → Webview) */
+export interface MsgCodePeekResponse {
+    type: 'CODE_PEEK_RESPONSE';
+    payload: {
+        filePath: string;
+        /** ファイルの先頭N行のソースコード */
+        code: string;
+        /** 全体行数 */
+        totalLines: number;
+        /** 言語 (拡張子から推定) */
+        language: string;
+    };
+}
+
 /** Webview → Extension に送信するメッセージの Union */
 export type WebviewToExtensionMessage =
     | MsgJumpToFile
     | MsgFocusNode
     | MsgRequestAnalysis
-    | MsgRuneModeChange;
+    | MsgRuneModeChange
+    | MsgCodePeekRequest;
 
 // ─── バイナリプロトコル (Transferable Objects) ─────────
 
@@ -299,7 +325,17 @@ export interface WorkerMsgDone {
         positions: Float32Array;
         /** ノードIDごとのリング情報 */
         rings: Record<string, 'focus' | 'context' | 'global'>;
+        /** 階層エッジ (Tree/Balloon レイアウト時のみ。ディレクトリ親子関係) */
+        hierarchyEdges?: HierarchyEdge[];
     };
+}
+
+/** ディレクトリ階層エッジ (Smart Edges V3.5) */
+export interface HierarchyEdge {
+    /** 親ノード (ファイル) の ID */
+    parent: string;
+    /** 子ノード (ファイル) の ID */
+    child: string;
 }
 
 /** Worker に送る全メッセージの Union */

@@ -221,6 +221,53 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
         #detail-panel .dp-dep-list li:hover {
             color: #88ccff;
         }
+        /* ─── Code Peek (V3.5) ─────────────────────────── */
+        #detail-panel .dp-code-peek {
+            background: rgba(5, 8, 20, 0.9);
+            border: 1px solid rgba(100, 150, 255, 0.12);
+            border-radius: 6px;
+            padding: 12px;
+            overflow-x: auto;
+            max-height: 320px;
+            overflow-y: auto;
+            position: relative;
+        }
+        #detail-panel .dp-code-peek pre {
+            margin: 0;
+            font-family: Consolas, 'Courier New', monospace;
+            font-size: 11px;
+            line-height: 1.5;
+            color: #c0c8e0;
+            white-space: pre;
+            tab-size: 4;
+        }
+        #detail-panel .dp-code-peek .cp-line-nums {
+            position: absolute;
+            top: 12px; left: 12px;
+            color: rgba(100, 140, 200, 0.3);
+            font-family: Consolas, 'Courier New', monospace;
+            font-size: 11px;
+            line-height: 1.5;
+            text-align: right;
+            user-select: none;
+            pointer-events: none;
+        }
+        #detail-panel .dp-code-peek pre code {
+            padding-left: 40px;
+            display: block;
+        }
+        /* 簡易構文ハイライト色 */
+        .hl-keyword { color: #c586c0; }
+        .hl-string { color: #ce9178; }
+        .hl-comment { color: #6a9955; }
+        .hl-type { color: #4ec9b0; }
+        .hl-number { color: #b5cea8; }
+        .dp-code-loading {
+            color: rgba(100, 180, 255, 0.5);
+            font-size: 11px;
+            padding: 8px;
+            font-style: italic;
+        }
     </style>
 </head>
 <body>

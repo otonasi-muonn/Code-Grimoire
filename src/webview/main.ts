@@ -16,6 +16,7 @@ import type {
     WorkerEdge,
     RuneMode,
     LayoutMode,
+    HierarchyEdge,
 } from '../shared/types.js';
 
 // ─── VS Code API ────────────────────────────────────────
@@ -60,6 +61,8 @@ interface AppState {
     currentLOD: LODLevel;
     /** 現在のレイアウトモード (V3) */
     layoutMode: LayoutMode;
+    /** 階層エッジ (Tree/Balloon 時のみ、V3.5) */
+    hierarchyEdges: HierarchyEdge[];
     /** 探索履歴 (Breadcrumbs) */
     breadcrumbs: BreadcrumbEntry[];
 }
@@ -78,6 +81,7 @@ const state: AppState = {
     runeMode: 'default',
     currentLOD: 'mid',
     layoutMode: 'force',
+    hierarchyEdges: [],
     breadcrumbs: [],
 };
 
@@ -220,6 +224,7 @@ function initWorker() {
                     case 'DONE':
                         applyPositions(msg.payload.positions);
                         applyRings(msg.payload.rings);
+                        state.hierarchyEdges = msg.payload.hierarchyEdges || [];
                         renderGraph();
                         state.isLoading = false;
                         stopParticleLoading();
@@ -285,6 +290,9 @@ window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessag
             state.error = msg.payload.message;
             state.isLoading = false;
             renderError();
+            break;
+        case 'CODE_PEEK_RESPONSE':
+            onCodePeekResponse(msg.payload);
             break;
     }
 });
@@ -795,7 +803,7 @@ function renderGraph() {
     // 同心円ガイド
     drawRingGuides();
 
-    // エッジ描画
+    // エッジ描画 (Smart Edges: レイアウトモード適応)
     const edgeGfx = new Graphics();
     const cycleNodeIds = new Set<string>();
     if (state.graph?.circularDeps) {
@@ -804,62 +812,108 @@ function renderGraph() {
         }
     }
 
-    for (const edge of graph.edges) {
-        const srcPos = state.nodePositions.get(edge.source);
-        const tgtPos = state.nodePositions.get(edge.target);
-        if (!srcPos || !tgtPos) { continue; }
+    const isHierarchyLayout = state.layoutMode === 'tree' || state.layoutMode === 'balloon';
 
-        const srcNode = graph.nodes.find(n => n.id === edge.source);
-        const isTypeOnly = edge.kind === 'type-import';
+    // ── 1) メインエッジ描画 ──────────────────────────────
+    if (isHierarchyLayout && state.hierarchyEdges.length > 0) {
+        // Tree / Balloon: 階層エッジをメインに描画
+        for (const hEdge of state.hierarchyEdges) {
+            const parentPos = state.nodePositions.get(hEdge.parent);
+            const childPos = state.nodePositions.get(hEdge.child);
+            if (!parentPos || !childPos) { continue; }
 
-        // LOD Far: type-import エッジは完全スキップ
-        if (state.currentLOD === 'far' && isTypeOnly) { continue; }
+            edgeGfx.moveTo(parentPos.x, parentPos.y);
 
-        // Architecture Rune: 循環参照エッジを赤くハイライト
-        const isCycleEdge = state.runeMode === 'architecture' &&
-            cycleNodeIds.has(edge.source) && cycleNodeIds.has(edge.target);
-
-        let color: number;
-        let alpha: number;
-        let width: number;
-
-        if (isCycleEdge) {
-            color = 0xff3333;
-            alpha = state.currentLOD === 'far' ? 0.5 : 0.8;
-            width = state.currentLOD === 'far' ? 1.5 : 3;
-        } else if (state.runeMode === 'architecture' && cycleNodeIds.size > 0) {
-            // Architecture モードで循環参照以外のエッジは薄く
-            color = srcNode ? getNodeColor(srcNode) : 0x334466;
-            alpha = 0.08;
-            width = 0.5;
-        } else {
-            color = srcNode ? getNodeColor(srcNode) : 0x334466;
-            // LOD Far: エッジを薄く細く
-            if (state.currentLOD === 'far') {
-                alpha = 0.1;
-                width = 0.5;
+            if (state.layoutMode === 'tree') {
+                // Yggdrasil: エルボー曲線 (放射状ツリーに沿った有機的な線)
+                const midX = (parentPos.x + childPos.x) / 2;
+                const midY = (parentPos.y + childPos.y) / 2;
+                edgeGfx.quadraticCurveTo(midX, parentPos.y, childPos.x, childPos.y);
             } else {
-                alpha = isTypeOnly ? 0.08 : 0.25;
-                width = isTypeOnly ? 0.5 : 1;
+                // Bubble: 直線 (パック円の中心同士を結ぶ)
+                edgeGfx.lineTo(childPos.x, childPos.y);
+            }
+            edgeGfx.stroke({ width: 1.2, color: 0x446688, alpha: 0.35 });
+        }
+
+        // 依存エッジを薄く重ねて描画 (構造美を損なわない程度)
+        for (const edge of graph.edges) {
+            const srcPos = state.nodePositions.get(edge.source);
+            const tgtPos = state.nodePositions.get(edge.target);
+            if (!srcPos || !tgtPos) { continue; }
+
+            const isTypeOnly = edge.kind === 'type-import';
+            if (isTypeOnly) { continue; } // type-import は非表示
+
+            const isCycleEdge = state.runeMode === 'architecture' &&
+                cycleNodeIds.has(edge.source) && cycleNodeIds.has(edge.target);
+
+            if (isCycleEdge) {
+                // 循環参照は赤で目立たせる (Architecture Rune 時)
+                edgeGfx.moveTo(srcPos.x, srcPos.y);
+                edgeGfx.lineTo(tgtPos.x, tgtPos.y);
+                edgeGfx.stroke({ width: 2, color: 0xff3333, alpha: 0.6 });
+            } else {
+                // 通常の依存エッジは点線風に薄く
+                edgeGfx.moveTo(srcPos.x, srcPos.y);
+                edgeGfx.lineTo(tgtPos.x, tgtPos.y);
+                edgeGfx.stroke({ width: 0.5, color: 0x334466, alpha: 0.08 });
             }
         }
+    } else {
+        // Mandala (Force): 従来の Dependency Edge を描画
+        for (const edge of graph.edges) {
+            const srcPos = state.nodePositions.get(edge.source);
+            const tgtPos = state.nodePositions.get(edge.target);
+            if (!srcPos || !tgtPos) { continue; }
 
-        edgeGfx.moveTo(srcPos.x, srcPos.y);
-        // Edge Bundling: 二次ベジェ曲線で描画
-        // 制御点を中点から原点方向にオフセットしてバンドリング効果を生む
-        if (state.currentLOD === 'far') {
-            // Far LOD: 直線で高速描画
-            edgeGfx.lineTo(tgtPos.x, tgtPos.y);
-        } else {
-            const midX = (srcPos.x + tgtPos.x) / 2;
-            const midY = (srcPos.y + tgtPos.y) / 2;
-            // 原点方向への吸引係数 (0.0=直線, 1.0=原点経由)
-            const bundleStrength = 0.25;
-            const cpX = midX * (1 - bundleStrength);
-            const cpY = midY * (1 - bundleStrength);
-            edgeGfx.quadraticCurveTo(cpX, cpY, tgtPos.x, tgtPos.y);
+            const srcNode = graph.nodes.find(n => n.id === edge.source);
+            const isTypeOnly = edge.kind === 'type-import';
+
+            // LOD Far: type-import エッジは完全スキップ
+            if (state.currentLOD === 'far' && isTypeOnly) { continue; }
+
+            // Architecture Rune: 循環参照エッジを赤くハイライト
+            const isCycleEdge = state.runeMode === 'architecture' &&
+                cycleNodeIds.has(edge.source) && cycleNodeIds.has(edge.target);
+
+            let color: number;
+            let alpha: number;
+            let width: number;
+
+            if (isCycleEdge) {
+                color = 0xff3333;
+                alpha = state.currentLOD === 'far' ? 0.5 : 0.8;
+                width = state.currentLOD === 'far' ? 1.5 : 3;
+            } else if (state.runeMode === 'architecture' && cycleNodeIds.size > 0) {
+                color = srcNode ? getNodeColor(srcNode) : 0x334466;
+                alpha = 0.08;
+                width = 0.5;
+            } else {
+                color = srcNode ? getNodeColor(srcNode) : 0x334466;
+                if (state.currentLOD === 'far') {
+                    alpha = 0.1;
+                    width = 0.5;
+                } else {
+                    alpha = isTypeOnly ? 0.08 : 0.25;
+                    width = isTypeOnly ? 0.5 : 1;
+                }
+            }
+
+            edgeGfx.moveTo(srcPos.x, srcPos.y);
+            // Edge Bundling: 二次ベジェ曲線で描画
+            if (state.currentLOD === 'far') {
+                edgeGfx.lineTo(tgtPos.x, tgtPos.y);
+            } else {
+                const midX = (srcPos.x + tgtPos.x) / 2;
+                const midY = (srcPos.y + tgtPos.y) / 2;
+                const bundleStrength = 0.25;
+                const cpX = midX * (1 - bundleStrength);
+                const cpY = midY * (1 - bundleStrength);
+                edgeGfx.quadraticCurveTo(cpX, cpY, tgtPos.x, tgtPos.y);
+            }
+            edgeGfx.stroke({ width, color, alpha });
         }
-        edgeGfx.stroke({ width, color, alpha });
     }
     edgeContainer.addChild(edgeGfx);
 
@@ -1805,7 +1859,90 @@ function openDetailPanel(nodeId: string) {
         });
     });
 
+    // Code Peek: ファイルの先頭50行をリクエスト
+    sendMessage({
+        type: 'CODE_PEEK_REQUEST',
+        payload: { filePath: node.filePath, maxLines: 50 },
+    });
+
     renderGraph(); // 選択強調
+}
+
+/** Code Peek 応答受信コールバック */
+function onCodePeekResponse(payload: { filePath: string; code: string; totalLines: number; language: string }) {
+    if (!detailContent || !selectedNodeId) { return; }
+
+    // 現在のパネルのファイルと一致するか確認
+    const currentNode = state.graph?.nodes.find(n => n.id === selectedNodeId);
+    if (!currentNode || currentNode.filePath !== payload.filePath) { return; }
+
+    // 既存のローディング表示を削除
+    const existing = detailContent.querySelector('.dp-code-section');
+    if (existing) { existing.remove(); }
+
+    // Code Peek セクションを追加
+    const section = document.createElement('div');
+    section.className = 'dp-section dp-code-section';
+
+    const label = document.createElement('div');
+    label.className = 'dp-label';
+    label.textContent = `Code Preview (${Math.min(50, payload.totalLines)}/${payload.totalLines} lines)`;
+    section.appendChild(label);
+
+    const codeContainer = document.createElement('div');
+    codeContainer.className = 'dp-code-peek';
+
+    // 行番号
+    const lines = payload.code.split('\n');
+    const lineNums = document.createElement('div');
+    lineNums.className = 'cp-line-nums';
+    lineNums.textContent = lines.map((_, i) => String(i + 1)).join('\n');
+    codeContainer.appendChild(lineNums);
+
+    // コード本体 (簡易ハイライト)
+    const pre = document.createElement('pre');
+    const code = document.createElement('code');
+    code.innerHTML = simpleHighlight(payload.code, payload.language);
+    pre.appendChild(code);
+    codeContainer.appendChild(pre);
+
+    section.appendChild(codeContainer);
+    detailContent.appendChild(section);
+}
+
+/** 簡易的な構文ハイライト (正規表現ベース) */
+function simpleHighlight(code: string, language: string): string {
+    let escaped = escapeHtml(code);
+
+    // コメント (// と /* */)
+    escaped = escaped.replace(/(\/\/[^\n]*)/g, '<span class="hl-comment">$1</span>');
+    escaped = escaped.replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="hl-comment">$1</span>');
+
+    // 文字列 ('...' と "..." と `...`)
+    escaped = escaped.replace(/(&quot;[^&]*?&quot;)/g, '<span class="hl-string">$1</span>');
+    escaped = escaped.replace(/(&#x27;[^&]*?&#x27;)/g, '<span class="hl-string">$1</span>');
+
+    // 数値
+    escaped = escaped.replace(/\b(\d+\.?\d*)\b/g, '<span class="hl-number">$1</span>');
+
+    if (language === 'typescript' || language === 'javascript') {
+        // キーワード
+        const keywords = [
+            'import', 'export', 'from', 'const', 'let', 'var', 'function',
+            'class', 'interface', 'type', 'enum', 'return', 'if', 'else',
+            'for', 'while', 'switch', 'case', 'break', 'default', 'new',
+            'this', 'async', 'await', 'try', 'catch', 'throw', 'extends',
+            'implements', 'readonly', 'public', 'private', 'protected',
+            'static', 'abstract', 'as', 'of', 'in', 'typeof', 'keyof',
+        ];
+        const kwRegex = new RegExp(`\\b(${keywords.join('|')})\\b`, 'g');
+        escaped = escaped.replace(kwRegex, '<span class="hl-keyword">$1</span>');
+
+        // 型名 (大文字始まり)
+        escaped = escaped.replace(/\b([A-Z][a-zA-Z0-9_]*)\b/g, '<span class="hl-type">$1</span>');
+    }
+
+    return escaped;
 }
 
 function closeDetailPanel() {
