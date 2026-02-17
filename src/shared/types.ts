@@ -164,6 +164,8 @@ export interface MsgInstantStructure {
         projectName: string;
         rootPath: string;
         fileCount: number;
+        /** VS Code の UI 言語 (e.g. 'en', 'ja') */
+        language: string;
     };
 }
 

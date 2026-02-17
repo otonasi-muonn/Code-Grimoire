@@ -47,6 +47,7 @@ export function activate(context: vscode.ExtensionContext) {
                     projectName,
                     rootPath: root,
                     fileCount: 0, // 後で更新
+                    language: vscode.env.language,
                 },
             });
 
@@ -61,6 +62,7 @@ export function activate(context: vscode.ExtensionContext) {
                     projectName,
                     rootPath: root,
                     fileCount: graph.nodes.length,
+                    language: vscode.env.language,
                 },
             });
 

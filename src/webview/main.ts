@@ -24,12 +24,98 @@ import type {
 const vscode = acquireVsCodeApi();
 
 // ─── LOD (Level of Detail) ───────────────────────────────
-type LODLevel = 'far' | 'mid' | 'near';
+type LODLevel = 'far' | 'mid';
 
 function getLODLevel(scale: number): LODLevel {
     if (scale < 0.3) { return 'far'; }
-    if (scale < 1.2) { return 'mid'; }
-    return 'near';
+    return 'mid';
+}
+
+// ─── I18n (Localization) ─────────────────────────────────
+
+type TranslationKey =
+    | 'rune.default' | 'rune.architecture' | 'rune.security' | 'rune.optimization' | 'rune.refactoring'
+    | 'layout.mandala' | 'layout.yggdrasil' | 'layout.bubble'
+    | 'dp.path' | 'dp.info' | 'dp.git' | 'dp.exports' | 'dp.imports' | 'dp.importedBy'
+    | 'dp.securityWarnings' | 'dp.optimization' | 'dp.codePreview'
+    | 'search.placeholder' | 'search.matches'
+    | 'status.computing' | 'status.awaiting'
+    | 'loading.summoning';
+
+const translations: Record<string, Record<TranslationKey, string>> = {
+    en: {
+        'rune.default': '◇ Default',
+        'rune.architecture': '⬡ Architecture',
+        'rune.security': '⚠ Security',
+        'rune.optimization': '⚡ Optimization',
+        'rune.refactoring': '🔥 Refactoring',
+        'layout.mandala': '◎ Mandala',
+        'layout.yggdrasil': '🌳 Yggdrasil',
+        'layout.bubble': '◉ Bubble',
+        'dp.path': 'Path',
+        'dp.info': 'Info',
+        'dp.git': 'Git',
+        'dp.exports': 'Exports',
+        'dp.imports': 'Imports',
+        'dp.importedBy': 'Imported by',
+        'dp.securityWarnings': '⚠ Security Warnings',
+        'dp.optimization': '⚡ Optimization',
+        'dp.codePreview': 'Code Preview',
+        'search.placeholder': 'Search files... (Ctrl+F)',
+        'search.matches': 'matches',
+        'status.computing': 'Computing layout...',
+        'status.awaiting': 'Awaiting analysis...',
+        'loading.summoning': '⟐ Summoning the Magic Circle...',
+    },
+    ja: {
+        'rune.default': '◇ 標準',
+        'rune.architecture': '⬡ 構造 (Architecture)',
+        'rune.security': '⚠ 防衛 (Security)',
+        'rune.optimization': '⚡ 最適化 (Optimization)',
+        'rune.refactoring': '🔥 再生 (Refactoring)',
+        'layout.mandala': '◎ 魔法陣 (Mandala)',
+        'layout.yggdrasil': '🌳 世界樹 (Yggdrasil)',
+        'layout.bubble': '◉ 泡宇宙 (Bubble)',
+        'dp.path': 'パス',
+        'dp.info': '情報',
+        'dp.git': 'Git',
+        'dp.exports': 'エクスポート',
+        'dp.imports': '依存 (Imports)',
+        'dp.importedBy': '被依存 (Imported by)',
+        'dp.securityWarnings': '⚠ セキュリティ警告',
+        'dp.optimization': '⚡ 最適化',
+        'dp.codePreview': 'コード閲覧',
+        'search.placeholder': 'ファイルを検索... (Ctrl+F)',
+        'search.matches': '件',
+        'status.computing': '魔法陣を構築中...',
+        'status.awaiting': '解析待機中...',
+        'loading.summoning': '⟐ 魔法陣を召喚中...',
+    },
+};
+
+let currentLang = 'en';
+
+/** 翻訳キーからローカライズテキストを取得 */
+function t(key: TranslationKey): string {
+    const dict = translations[currentLang] || translations['en'];
+    return dict[key] ?? translations['en'][key] ?? key;
+}
+
+/** 言語設定変更時に UI テキストを一括更新 */
+function applyLocalization() {
+    // Search placeholder
+    const searchInput = document.getElementById('search-input') as HTMLInputElement | null;
+    if (searchInput) {
+        searchInput.placeholder = t('search.placeholder');
+    }
+    // Loading overlay text
+    const loadingText = document.querySelector('.loading-text');
+    if (loadingText) {
+        loadingText.textContent = t('loading.summoning');
+    }
+    // Rune & Layout UI (再描画で反映)
+    if (typeof refreshRuneUI === 'function') { refreshRuneUI(); }
+    if (typeof refreshLayoutUI === 'function') { refreshLayoutUI(); }
 }
 
 // ─── 状態管理 ────────────────────────────────────────────
@@ -65,6 +151,12 @@ interface AppState {
     hierarchyEdges: HierarchyEdge[];
     /** 探索履歴 (Breadcrumbs) */
     breadcrumbs: BreadcrumbEntry[];
+    /** ノードごとの接続数キャッシュ (Smart Labeling 用) */
+    nodeDegree: Map<string, number>;
+    /** ノードID → Container 参照 (Interactive Glow 用) */
+    nodeContainerMap: Map<string, Container>;
+    /** ホバー中の接続ノードID群 (Interactive Glow 用) */
+    glowConnectedIds: Set<string>;
 }
 
 const state: AppState = {
@@ -83,6 +175,9 @@ const state: AppState = {
     layoutMode: 'force',
     hierarchyEdges: [],
     breadcrumbs: [],
+    nodeDegree: new Map(),
+    nodeContainerMap: new Map(),
+    glowConnectedIds: new Set(),
 };
 
 // ─── 色ユーティリティ ────────────────────────────────────
@@ -279,6 +374,11 @@ window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessag
         case 'INSTANT_STRUCTURE':
             state.projectName = msg.payload.projectName;
             state.isLoading = true;
+            // I18n: 言語を設定
+            if (msg.payload.language) {
+                currentLang = msg.payload.language.startsWith('ja') ? 'ja' : 'en';
+                applyLocalization();
+            }
             updateStatusText();
             break;
         case 'GRAPH_DATA':
@@ -311,6 +411,16 @@ function onGraphReceived() {
 
     // ノード順序を記録
     state.nodeOrder = graph.nodes.map(n => n.id);
+
+    // Smart Labeling: ノード接続数を計算
+    state.nodeDegree.clear();
+    for (const node of graph.nodes) {
+        state.nodeDegree.set(node.id, 0);
+    }
+    for (const edge of graph.edges) {
+        state.nodeDegree.set(edge.source, (state.nodeDegree.get(edge.source) || 0) + 1);
+        state.nodeDegree.set(edge.target, (state.nodeDegree.get(edge.target) || 0) + 1);
+    }
 
     // Worker がまだ準備中なら待機フラグを立てる
     if (!state.workerReady) {
@@ -487,7 +597,7 @@ async function init() {
         fill: 0x6696ff,
         fontFamily: 'Consolas, "Courier New", monospace',
     });
-    statusText = new Text({ text: 'Awaiting analysis...', style: statusStyle });
+    statusText = new Text({ text: t('status.awaiting'), style: statusStyle });
     statusText.position.set(16, window.innerHeight - 40);
     uiContainer.addChild(statusText);
 
@@ -918,6 +1028,7 @@ function renderGraph() {
     edgeContainer.addChild(edgeGfx);
 
     // ノード描画
+    state.nodeContainerMap.clear();
     for (const node of graph.nodes) {
         const pos = state.nodePositions.get(node.id);
         if (!pos) { continue; }
@@ -935,6 +1046,12 @@ function renderGraph() {
             nodeGfx.alpha = Math.min(nodeGfx.alpha, 0.35);
         }
 
+        // Interactive Glow: 接続中ノードを発光
+        if (state.glowConnectedIds.has(node.id)) {
+            nodeGfx.alpha = 1.0;
+        }
+
+        state.nodeContainerMap.set(node.id, nodeGfx);
         nodeContainer.addChild(nodeGfx);
     }
 
@@ -989,8 +1106,10 @@ function createNodeGraphics(
             container.alpha = Math.max(0.1, getRingAlpha(ring) * 0.3);
         }
 
-        // Focus ノードのみ小ラベル表示
-        if (isFocus) {
+        // Smart Labeling: Focus ノード & Hub ノード (接続数 >= 5) のみラベル表示
+        const degree = state.nodeDegree.get(node.id) || 0;
+        const isHub = degree >= 5;
+        if (isFocus || isHub) {
             const miniLabel = createSmartText(node.label, { fontSize: 8, fill: glowColor });
             miniLabel.anchor.set(0.5, 0);
             miniLabel.position.set(0, Math.max(4, nodeRadius * 0.35) + 4);
@@ -1002,7 +1121,7 @@ function createNodeGraphics(
     }
 
     // ═══════════════════════════════════════════════════
-    // LOD: Mid & Near — フルノード描画
+    // LOD: Mid — フルノード描画
     // ═══════════════════════════════════════════════════
 
     // 外周グロー
@@ -1043,83 +1162,6 @@ function createNodeGraphics(
         badge.position.set(0, nextBadgeY);
         container.addChild(badge);
         nextBadgeY += 12;
-    }
-
-    // ═══════════════════════════════════════════════════
-    // LOD: Near — 詳細情報パネル (scale >= 1.2)
-    // ═══════════════════════════════════════════════════
-    if (lod === 'near') {
-        const detailLines: string[] = [];
-
-        // 行数
-        detailLines.push(`📝 ${node.lineCount} lines`);
-
-        // import 数 (受信エッジ数)
-        if (state.graph) {
-            const incomingCount = state.graph.edges.filter(e => e.target === node.id).length;
-            const outgoingCount = state.graph.edges.filter(e => e.source === node.id).length;
-            detailLines.push(`📥 ${incomingCount} in / 📤 ${outgoingCount} out`);
-        }
-
-        // エクスポートシンボル一覧 (先頭5件)
-        if (node.exports.length > 0) {
-            const exportNames = node.exports.slice(0, 5).map(e => e.name).join(', ');
-            const suffix = node.exports.length > 5 ? ` +${node.exports.length - 5}` : '';
-            detailLines.push(`⬡ ${exportNames}${suffix}`);
-        }
-
-        // 関数依存 (先頭3件)
-        if (node.functionDeps && node.functionDeps.length > 0) {
-            const funcNames = node.functionDeps.slice(0, 3).map(f => f.calleeName).join(', ');
-            const suffix = node.functionDeps.length > 3 ? ` +${node.functionDeps.length - 3}` : '';
-            detailLines.push(`⚡ calls: ${funcNames}${suffix}`);
-        }
-
-        // セキュリティ警告詳細
-        if (node.securityWarnings && node.securityWarnings.length > 0) {
-            for (const w of node.securityWarnings.slice(0, 3)) {
-                detailLines.push(`⚠ L${w.line}: ${w.kind}`);
-            }
-            if (node.securityWarnings.length > 3) {
-                detailLines.push(`  +${node.securityWarnings.length - 3} more warnings`);
-            }
-        }
-
-        // Git 情報
-        if (node.gitCommitCount && node.gitCommitCount > 0) {
-            detailLines.push(`🔥 ${node.gitCommitCount} commits`);
-            if (node.gitLastModified) {
-                detailLines.push(`📅 ${node.gitLastModified.substring(0, 10)}`);
-            }
-        }
-
-        if (detailLines.length > 0) {
-            // 背景パネル
-            const panelWidth = 180;
-            const lineHeight = 13;
-            const panelHeight = detailLines.length * lineHeight + 12;
-            const panelY = nextBadgeY + 6;
-
-            const panel = new Graphics();
-            panel.roundRect(-panelWidth / 2, panelY, panelWidth, panelHeight, 4);
-            panel.fill({ color: 0x0d1025, alpha: 0.85 });
-            panel.stroke({ width: 1, color: baseColor, alpha: 0.3 });
-            container.addChild(panel);
-
-            const detailStyle = new TextStyle({
-                fontSize: 9,
-                fill: 0x99aabb,
-                fontFamily: 'Consolas, monospace',
-                lineHeight: lineHeight,
-            });
-            const detailText = new Text({
-                text: detailLines.join('\n'),
-                style: detailStyle,
-            });
-            detailText.anchor.set(0.5, 0);
-            detailText.position.set(0, panelY + 6);
-            container.addChild(detailText);
-        }
     }
 
     // ─── Rune モード別オーバーレイ ───────────────────────
@@ -1238,12 +1280,26 @@ function attachNodeInteraction(
     gfx?: Graphics,
     outerGfx?: Graphics,
 ) {
-    // インタラクション: ホバー
+    // インタラクション: ホバー + Interactive Glow
     container.on('pointerover', () => {
         state.hoveredNodeId = node.id;
         if (gfx) { gfx.tint = 0xffffff; }
         if (outerGfx) { outerGfx.alpha = 0.6; }
         container.alpha = 1.0;
+
+        // Interactive Glow: 接続ノードを発光させる
+        if (state.graph) {
+            const connectedIds = new Set<string>();
+            for (const edge of state.graph.edges) {
+                if (edge.source === node.id) { connectedIds.add(edge.target); }
+                if (edge.target === node.id) { connectedIds.add(edge.source); }
+            }
+            state.glowConnectedIds = connectedIds;
+            for (const cid of connectedIds) {
+                const c = state.nodeContainerMap.get(cid);
+                if (c) { c.alpha = Math.min(1.0, c.alpha + 0.4); }
+            }
+        }
     });
 
     container.on('pointerout', () => {
@@ -1251,6 +1307,16 @@ function attachNodeInteraction(
         if (gfx) { gfx.tint = 0xffffff; }
         if (outerGfx) { outerGfx.alpha = 1; }
         container.alpha = getRingAlpha(ring);
+
+        // Interactive Glow: 接続ノードの発光を解除
+        for (const cid of state.glowConnectedIds) {
+            const c = state.nodeContainerMap.get(cid);
+            if (c) {
+                const cRing = state.nodeRings.get(cid) || 'global';
+                c.alpha = getRingAlpha(cRing);
+            }
+        }
+        state.glowConnectedIds.clear();
     });
 
     // インタラクション: クリック = Summoning + Detail Panel
@@ -1293,17 +1359,16 @@ function getNodeSides(node: GraphNode): number {
 
 interface RuneButton {
     mode: RuneMode;
-    label: string;
-    icon: string;
+    translationKey: TranslationKey;
     color: number;
 }
 
 const RUNE_BUTTONS: RuneButton[] = [
-    { mode: 'default',       label: 'Default',       icon: '◇', color: 0x6696ff },
-    { mode: 'architecture',  label: 'Architecture',  icon: '⬡', color: 0x44bbff },
-    { mode: 'security',      label: 'Security',      icon: '⚠', color: 0xff8800 },
-    { mode: 'optimization',  label: 'Optimization',  icon: '⚡', color: 0x44ff88 },
-    { mode: 'refactoring',   label: 'Refactoring',   icon: '🔥', color: 0xff4400 },
+    { mode: 'default',       translationKey: 'rune.default',       color: 0x6696ff },
+    { mode: 'architecture',  translationKey: 'rune.architecture',  color: 0x44bbff },
+    { mode: 'security',      translationKey: 'rune.security',      color: 0xff8800 },
+    { mode: 'optimization',  translationKey: 'rune.optimization',  color: 0x44ff88 },
+    { mode: 'refactoring',   translationKey: 'rune.refactoring',   color: 0xff4400 },
 ];
 
 let runeContainer: Container;
@@ -1321,7 +1386,7 @@ function initRuneUI() {
 
         // 背景
         const bg = new Graphics();
-        bg.roundRect(0, 0, 140, 30, 6);
+        bg.roundRect(0, 0, 160, 30, 6);
         const isActive = state.runeMode === btn.mode;
         bg.fill({ color: isActive ? btn.color : 0x151830, alpha: isActive ? 0.35 : 0.6 });
         bg.stroke({ width: 1, color: btn.color, alpha: isActive ? 0.9 : 0.3 });
@@ -1329,7 +1394,7 @@ function initRuneUI() {
 
         // テキスト
         const text = new Text({
-            text: `${btn.icon} ${btn.label}`,
+            text: t(btn.translationKey),
             style: new TextStyle({
                 fontSize: 11,
                 fill: isActive ? 0xffffff : btn.color,
@@ -1362,14 +1427,14 @@ function refreshRuneUI() {
         btnContainer.cursor = 'pointer';
 
         const bg = new Graphics();
-        bg.roundRect(0, 0, 140, 30, 6);
+        bg.roundRect(0, 0, 160, 30, 6);
         const isActive = state.runeMode === btn.mode;
         bg.fill({ color: isActive ? btn.color : 0x151830, alpha: isActive ? 0.35 : 0.6 });
         bg.stroke({ width: 1, color: btn.color, alpha: isActive ? 0.9 : 0.3 });
         btnContainer.addChild(bg);
 
         const text = new Text({
-            text: `${btn.icon} ${btn.label}`,
+            text: t(btn.translationKey),
             style: new TextStyle({
                 fontSize: 11,
                 fill: isActive ? 0xffffff : btn.color,
@@ -1396,15 +1461,14 @@ let breadcrumbContainer: Container;
 // ─── Layout Mode UI (V3) ────────────────────────────────
 interface LayoutButton {
     mode: LayoutMode;
-    label: string;
-    icon: string;
+    translationKey: TranslationKey;
     color: number;
 }
 
 const LAYOUT_BUTTONS: LayoutButton[] = [
-    { mode: 'force',   label: 'Mandala',   icon: '◎', color: 0x8866ff },
-    { mode: 'tree',    label: 'Yggdrasil', icon: '🌳', color: 0x44cc88 },
-    { mode: 'balloon', label: 'Bubble',    icon: '◉', color: 0x6699ff },
+    { mode: 'force',   translationKey: 'layout.mandala',   color: 0x8866ff },
+    { mode: 'tree',    translationKey: 'layout.yggdrasil', color: 0x44cc88 },
+    { mode: 'balloon', translationKey: 'layout.bubble',    color: 0x6699ff },
 ];
 
 let layoutContainer: Container;
@@ -1438,7 +1502,7 @@ function refreshLayoutUI() {
     // セパレータライン
     const sep = new Graphics();
     sep.moveTo(4, -10);
-    sep.lineTo(136, -10);
+    sep.lineTo(156, -10);
     sep.stroke({ width: 1, color: 0x334466, alpha: 0.4 });
     layoutContainer.addChild(sep);
 
@@ -1450,13 +1514,13 @@ function refreshLayoutUI() {
 
         const isActive = state.layoutMode === btn.mode;
         const bg = new Graphics();
-        bg.roundRect(0, 0, 140, 30, 6);
+        bg.roundRect(0, 0, 160, 30, 6);
         bg.fill({ color: isActive ? btn.color : 0x151830, alpha: isActive ? 0.35 : 0.6 });
         bg.stroke({ width: 1, color: btn.color, alpha: isActive ? 0.9 : 0.3 });
         btnContainer.addChild(bg);
 
         const text = new Text({
-            text: `${btn.icon} ${btn.label}`,
+            text: t(btn.translationKey),
             style: new TextStyle({
                 fontSize: 11,
                 fill: isActive ? 0xffffff : btn.color,
@@ -1640,7 +1704,7 @@ function performSearch(query: string) {
 function updateSearchCount() {
     if (!searchCountEl) { return; }
     if (searchResults.length === 0) {
-        searchCountEl.textContent = searchInput?.value ? '0 matches' : '';
+        searchCountEl.textContent = searchInput?.value ? `0 ${t('search.matches')}` : '';
     } else {
         searchCountEl.textContent = `${searchCurrentIdx + 1}/${searchResults.length}`;
     }
@@ -1761,13 +1825,13 @@ function openDetailPanel(nodeId: string) {
 
     // パス
     html += `<div class="dp-section">
-        <div class="dp-label">Path</div>
+        <div class="dp-label">${t('dp.path')}</div>
         <div class="dp-value path">${escapeHtml(node.relativePath)}</div>
     </div>`;
 
     // 基本情報
     html += `<div class="dp-section">
-        <div class="dp-label">Info</div>
+        <div class="dp-label">${t('dp.info')}</div>
         <div class="dp-value">
             <span class="dp-badge">${node.kind}</span>
             <span class="dp-badge">${node.lineCount} lines</span>
@@ -1778,7 +1842,7 @@ function openDetailPanel(nodeId: string) {
     // Git 情報
     if (node.gitCommitCount !== undefined) {
         html += `<div class="dp-section">
-            <div class="dp-label">Git</div>
+            <div class="dp-label">${t('dp.git')}</div>
             <div class="dp-value">
                 <span class="dp-badge">${node.gitCommitCount} commits</span>
                 ${node.gitLastModified ? `<span class="dp-badge">${node.gitLastModified.substring(0, 10)}</span>` : ''}
@@ -1789,7 +1853,7 @@ function openDetailPanel(nodeId: string) {
     // Exports
     if (node.exports.length > 0) {
         html += `<div class="dp-section">
-            <div class="dp-label">Exports</div>
+            <div class="dp-label">${t('dp.exports')}</div>
             <div class="dp-value">${node.exports.map(e =>
                 `<span class="dp-badge">${e.isDefault ? '★ ' : ''}${escapeHtml(e.name)} <small>(${e.kind})</small></span>`
             ).join('')}</div>
@@ -1800,7 +1864,7 @@ function openDetailPanel(nodeId: string) {
     const outEdges = graph.edges.filter(e => e.source === nodeId);
     if (outEdges.length > 0) {
         html += `<div class="dp-section">
-            <div class="dp-label">Imports (${outEdges.length})</div>
+            <div class="dp-label">${t('dp.imports')} (${outEdges.length})</div>
             <ul class="dp-dep-list">${outEdges.map(e => {
                 const targetNode = graph.nodes.find(n => n.id === e.target);
                 const label = targetNode?.label || e.target.split('/').pop() || e.target;
@@ -1813,7 +1877,7 @@ function openDetailPanel(nodeId: string) {
     const inEdges = graph.edges.filter(e => e.target === nodeId);
     if (inEdges.length > 0) {
         html += `<div class="dp-section">
-            <div class="dp-label">Imported by (${inEdges.length})</div>
+            <div class="dp-label">${t('dp.importedBy')} (${inEdges.length})</div>
             <ul class="dp-dep-list">${inEdges.map(e => {
                 const srcNode = graph.nodes.find(n => n.id === e.source);
                 const label = srcNode?.label || e.source.split('/').pop() || e.source;
@@ -1825,7 +1889,7 @@ function openDetailPanel(nodeId: string) {
     // セキュリティ警告
     if (node.securityWarnings && node.securityWarnings.length > 0) {
         html += `<div class="dp-section">
-            <div class="dp-label">⚠ Security Warnings</div>
+            <div class="dp-label">${t('dp.securityWarnings')}</div>
             ${node.securityWarnings.map(w =>
                 `<div class="dp-warning">L${w.line}: ${escapeHtml(w.message)}</div>`
             ).join('')}
@@ -1835,7 +1899,7 @@ function openDetailPanel(nodeId: string) {
     // Optimization
     if (node.isBarrel || (node.treeShakingRisk !== undefined && node.treeShakingRisk > 0)) {
         html += `<div class="dp-section">
-            <div class="dp-label">⚡ Optimization</div>
+            <div class="dp-label">${t('dp.optimization')}</div>
             <div class="dp-value">
                 ${node.isBarrel ? '<span class="dp-badge" style="color:#ff8800">Barrel file</span>' : ''}
                 ${node.treeShakingRisk !== undefined ? `<span class="dp-badge">Tree-shaking risk: ${node.treeShakingRisk}</span>` : ''}
@@ -1886,7 +1950,7 @@ function onCodePeekResponse(payload: { filePath: string; code: string; totalLine
 
     const label = document.createElement('div');
     label.className = 'dp-label';
-    label.textContent = `Code Preview (${Math.min(50, payload.totalLines)}/${payload.totalLines} lines)`;
+    label.textContent = `${t('dp.codePreview')} (${Math.min(50, payload.totalLines)}/${payload.totalLines} lines)`;
     section.appendChild(label);
 
     const codeContainer = document.createElement('div');
@@ -1964,7 +2028,7 @@ function escapeHtml(str: string): string {
 // ─── UI ──────────────────────────────────────────────────
 function updateStatusText() {
     if (state.isLoading) {
-        statusText.text = `⟐ ${state.projectName} — Computing layout...`;
+        statusText.text = `⟐ ${state.projectName} — ${t('status.computing')}`;
     } else if (state.graph) {
         const g = state.graph;
         const focusLabel = state.focusNodeId
