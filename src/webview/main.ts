@@ -502,12 +502,16 @@ function summonNode(nodeId: string) {
     }
 }
 
-/** Viewport をスムーズにターゲット座標へ移動 */
+/** Viewport をスムーズにターゲット座標へ移動 (Smart Camera: Detail Panel オフセット対応) */
 function animateViewportTo(targetX: number, targetY: number) {
     const duration = 600; // ms
     const startX = viewport.center.x;
     const startY = viewport.center.y;
     const startTime = performance.now();
+
+    // Smart Camera Offset: Detail Panel が開いていれば左へ panelWidth/2 分ずらす
+    const panelOffset = selectedNodeId ? -170 / viewport.scaled : 0;
+    const finalX = targetX - panelOffset;
 
     const animate = () => {
         const elapsed = performance.now() - startTime;
@@ -515,7 +519,7 @@ function animateViewportTo(targetX: number, targetY: number) {
         // easeOutCubic
         const ease = 1 - Math.pow(1 - t, 3);
 
-        const x = startX + (targetX - startX) * ease;
+        const x = startX + (finalX - startX) * ease;
         const y = startY + (targetY - startY) * ease;
         viewport.moveCenter(x, y);
 
@@ -547,7 +551,7 @@ let fpsText: Text;
 async function init() {
     app = new Application();
     await app.init({
-        background: 0x0a0c1e,
+        background: 0x080a18,
         resizeTo: window,
         antialias: true,
         resolution: window.devicePixelRatio || 1,
@@ -620,7 +624,7 @@ async function init() {
         statusText.position.set(16, window.innerHeight - 40);
         fpsText.position.set(window.innerWidth - 100, 16);
         if (breadcrumbContainer) {
-            breadcrumbContainer.position.set(170, window.innerHeight - 70);
+            breadcrumbContainer.position.set(TOOLBAR_PAD, TOOLBAR_Y + TOOLBAR_BTN_SIZE + 8);
         }
         if (minimapContainer) {
             updateMinimapPosition();
@@ -784,10 +788,13 @@ function startParticleLoading() {
     app.ticker.add(particleTickerFn);
 }
 
-/** パーティクルアニメーション停止（フェードアウト） */
+/** パーティクルアニメーション停止（フェードアウト + Shockwave） */
 function stopParticleLoading() {
     if (!particleAnimActive) { return; }
     particleAnimActive = false;
+
+    // ── Shockwave エフェクト (中心から外側へ広がるリング) ──
+    triggerShockwave();
 
     // フェードアウト
     const fadeStart = performance.now();
@@ -809,6 +816,138 @@ function stopParticleLoading() {
         }
     };
     requestAnimationFrame(fadeOut);
+}
+
+// ─── Shockwave エフェクト (V5: Summoning Impact) ─────────
+function triggerShockwave() {
+    const cx = state.focusNodeId ? (state.nodePositions.get(state.focusNodeId)?.x || 0) : 0;
+    const cy = state.focusNodeId ? (state.nodePositions.get(state.focusNodeId)?.y || 0) : 0;
+
+    const shockGfx = new Graphics();
+    viewport.addChild(shockGfx);
+
+    const startTime = performance.now();
+    const duration = 700;
+    const maxRadius = 500;
+
+    const animateShock = () => {
+        const elapsed = performance.now() - startTime;
+        const t = Math.min(elapsed / duration, 1);
+        const ease = 1 - Math.pow(1 - t, 3); // easeOutCubic
+
+        const radius = ease * maxRadius;
+        const alpha = (1 - t) * 0.4;
+        const width = 2 + (1 - t) * 3;
+
+        shockGfx.clear();
+        shockGfx.circle(cx, cy, radius);
+        shockGfx.stroke({ width, color: 0x44aaff, alpha });
+
+        // 内側にフラッシュリング
+        if (t < 0.3) {
+            const flashAlpha = (0.3 - t) / 0.3 * 0.15;
+            shockGfx.circle(cx, cy, radius * 0.6);
+            shockGfx.fill({ color: 0x88ddff, alpha: flashAlpha });
+        }
+
+        if (t < 1) {
+            requestAnimationFrame(animateShock);
+        } else {
+            viewport.removeChild(shockGfx);
+            shockGfx.destroy();
+        }
+    };
+    requestAnimationFrame(animateShock);
+}
+
+// ─── Edge Particle Flow (V5: 依存方向の光粒子) ──────────
+interface EdgeFlowParticle {
+    srcId: string;
+    tgtId: string;
+    progress: number; // 0.0 → 1.0
+    speed: number;
+    color: number;
+}
+
+const EDGE_FLOW_MAX = 60;
+let edgeFlowParticles: EdgeFlowParticle[] = [];
+let edgeFlowGfx: Graphics | null = null;
+let edgeFlowTickerFn: ((dt: any) => void) | null = null;
+
+/** Edge Particle Flow を開始 (renderGraph 後に呼ぶ) */
+function startEdgeFlow() {
+    if (edgeFlowTickerFn) { return; } // 既に動作中
+
+    edgeFlowGfx = new Graphics();
+    edgeContainer.addChild(edgeFlowGfx);
+
+    edgeFlowTickerFn = () => {
+        if (!edgeFlowGfx || !state.graph || state.isLoading) { return; }
+        edgeFlowGfx.clear();
+
+        // Mid LOD のみ描画 (Far では省略)
+        if (state.currentLOD === 'far') { return; }
+
+        const dt = app.ticker.deltaTime * 0.016;
+
+        // 不足分をスポーン
+        while (edgeFlowParticles.length < EDGE_FLOW_MAX && state.graph.edges.length > 0) {
+            const edge = state.graph.edges[Math.floor(Math.random() * state.graph.edges.length)];
+            if (edge.kind === 'type-import') { continue; }
+            const srcNode = state.graph.nodes.find(n => n.id === edge.source);
+            edgeFlowParticles.push({
+                srcId: edge.source,
+                tgtId: edge.target,
+                progress: Math.random() * 0.3,
+                speed: 0.15 + Math.random() * 0.25,
+                color: srcNode ? getNodeColor(srcNode) : 0x4488ff,
+            });
+        }
+
+        // 更新 & 描画
+        for (let i = edgeFlowParticles.length - 1; i >= 0; i--) {
+            const p = edgeFlowParticles[i];
+            p.progress += p.speed * dt;
+
+            if (p.progress >= 1.0) {
+                edgeFlowParticles.splice(i, 1);
+                continue;
+            }
+
+            const srcPos = state.nodePositions.get(p.srcId);
+            const tgtPos = state.nodePositions.get(p.tgtId);
+            if (!srcPos || !tgtPos) { continue; }
+
+            const x = srcPos.x + (tgtPos.x - srcPos.x) * p.progress;
+            const y = srcPos.y + (tgtPos.y - srcPos.y) * p.progress;
+
+            // フェードイン/アウト
+            const alpha = p.progress < 0.15 ? p.progress / 0.15
+                        : p.progress > 0.85 ? (1 - p.progress) / 0.15
+                        : 1.0;
+
+            // グロー
+            edgeFlowGfx.circle(x, y, 3);
+            edgeFlowGfx.fill({ color: p.color, alpha: alpha * 0.12 });
+            // コア
+            edgeFlowGfx.circle(x, y, 1.2);
+            edgeFlowGfx.fill({ color: 0xffffff, alpha: alpha * 0.6 });
+        }
+    };
+    app.ticker.add(edgeFlowTickerFn);
+}
+
+/** Edge Particle Flow を停止 */
+function stopEdgeFlow() {
+    if (edgeFlowTickerFn) {
+        app.ticker.remove(edgeFlowTickerFn);
+        edgeFlowTickerFn = null;
+    }
+    edgeFlowParticles = [];
+    if (edgeFlowGfx) {
+        edgeFlowGfx.clear();
+        edgeFlowGfx = null;
+    }
 }
 
 // ─── 同心円ガイド描画 ────────────────────────────────────
@@ -1060,6 +1199,10 @@ function renderGraph() {
 
     // Minimap 更新
     if (minimapGfx) { refreshMinimap(); }
+
+    // Edge Particle Flow: レンダリング後に開始
+    stopEdgeFlow();
+    if (!state.isLoading) { startEdgeFlow(); }
 }
 
 function createNodeGraphics(
@@ -1280,12 +1423,17 @@ function attachNodeInteraction(
     gfx?: Graphics,
     outerGfx?: Graphics,
 ) {
-    // インタラクション: ホバー + Interactive Glow
+    const baseScale = container.scale.x;
+
+    // インタラクション: ホバー + Interactive Glow + Scale-up
     container.on('pointerover', () => {
         state.hoveredNodeId = node.id;
         if (gfx) { gfx.tint = 0xffffff; }
         if (outerGfx) { outerGfx.alpha = 0.6; }
         container.alpha = 1.0;
+
+        // Hover Scale-up (V5)
+        animateScale(container, baseScale, baseScale * 1.15, 120);
 
         // Interactive Glow: 接続ノードを発光させる
         if (state.graph) {
@@ -1308,6 +1456,9 @@ function attachNodeInteraction(
         if (outerGfx) { outerGfx.alpha = 1; }
         container.alpha = getRingAlpha(ring);
 
+        // Hover Scale-down (V5)
+        animateScale(container, container.scale.x, baseScale, 120);
+
         // Interactive Glow: 接続ノードの発光を解除
         for (const cid of state.glowConnectedIds) {
             const c = state.nodeContainerMap.get(cid);
@@ -1319,7 +1470,7 @@ function attachNodeInteraction(
         state.glowConnectedIds.clear();
     });
 
-    // インタラクション: クリック = Summoning + Detail Panel
+    // インタラクション: クリック = Summoning + Detail Panel + Ripple
     // 右クリック or Alt+クリック = ファイルへジャンプ
     container.on('pointertap', (e: FederatedPointerEvent) => {
         if (e.altKey || e.button === 2) {
@@ -1328,6 +1479,9 @@ function attachNodeInteraction(
                 payload: { filePath: node.filePath, line: 1 },
             });
         } else {
+            // Click Ripple (V5)
+            const pos = state.nodePositions.get(node.id);
+            if (pos) { triggerClickRipple(pos.x, pos.y, getNodeColor(node)); }
             summonNode(node.id);
             openDetailPanel(node.id);
         }
@@ -1343,6 +1497,79 @@ function attachNodeInteraction(
     });
 }
 
+/** スケールアニメーション (V5 Hover Feedback) */
+function animateScale(target: Container, from: number, to: number, duration: number) {
+    const startTime = performance.now();
+    const tick = () => {
+        const elapsed = performance.now() - startTime;
+        const t = Math.min(elapsed / duration, 1);
+        const ease = 1 - Math.pow(1 - t, 2); // easeOutQuad
+        const val = from + (to - from) * ease;
+        target.scale.set(val, val);
+        if (t < 1) { requestAnimationFrame(tick); }
+    };
+    requestAnimationFrame(tick);
+}
+
+/** クリック波紋エフェクト (V5) */
+function triggerClickRipple(worldX: number, worldY: number, color: number) {
+    const rippleGfx = new Graphics();
+    viewport.addChild(rippleGfx);
+
+    const startTime = performance.now();
+    const duration = 400;
+    const maxRadius = 60;
+
+    const animateRipple = () => {
+        const elapsed = performance.now() - startTime;
+        const t = Math.min(elapsed / duration, 1);
+        const ease = 1 - Math.pow(1 - t, 3);
+
+        rippleGfx.clear();
+        const radius = ease * maxRadius;
+        const alpha = (1 - t) * 0.5;
+
+        rippleGfx.circle(worldX, worldY, radius);
+        rippleGfx.stroke({ width: 1.5, color, alpha });
+
+        if (t < 0.5) {
+            rippleGfx.circle(worldX, worldY, radius * 0.5);
+            rippleGfx.fill({ color, alpha: (0.5 - t) * 0.1 });
+        }
+
+        if (t < 1) {
+            requestAnimationFrame(animateRipple);
+        } else {
+            viewport.removeChild(rippleGfx);
+            rippleGfx.destroy();
+        }
+    };
+    requestAnimationFrame(animateRipple);
+}
+
+/** エラー時の赤フラッシュ (V5) */
+function triggerErrorFlash() {
+    const flashGfx = new Graphics();
+    flashGfx.rect(0, 0, window.innerWidth, window.innerHeight);
+    flashGfx.fill({ color: 0xff2222, alpha: 0.15 });
+    app.stage.addChild(flashGfx);
+
+    const startTime = performance.now();
+    const duration = 500;
+    const flash = () => {
+        const elapsed = performance.now() - startTime;
+        const t = Math.min(elapsed / duration, 1);
+        flashGfx.alpha = (1 - t);
+        if (t < 1) {
+            requestAnimationFrame(flash);
+        } else {
+            app.stage.removeChild(flashGfx);
+            flashGfx.destroy();
+        }
+    };
+    requestAnimationFrame(flash);
+}
+
 /** ノードの種別とエクスポート数に応じた多角形の辺数を返す */
 function getNodeSides(node: GraphNode): number {
     if (node.kind === 'package' || node.kind === 'config') { return 4; }
@@ -1355,130 +1582,168 @@ function getNodeSides(node: GraphNode): number {
     return 6;
 }
 
-// ─── Rune UI (モード切り替えパネル) ─────────────────────
+// ─── Rune UI (モード切り替え — 横型ヘッダーバー) ────────
 
 interface RuneButton {
     mode: RuneMode;
     translationKey: TranslationKey;
+    icon: string;
     color: number;
 }
 
 const RUNE_BUTTONS: RuneButton[] = [
-    { mode: 'default',       translationKey: 'rune.default',       color: 0x6696ff },
-    { mode: 'architecture',  translationKey: 'rune.architecture',  color: 0x44bbff },
-    { mode: 'security',      translationKey: 'rune.security',      color: 0xff8800 },
-    { mode: 'optimization',  translationKey: 'rune.optimization',  color: 0x44ff88 },
-    { mode: 'refactoring',   translationKey: 'rune.refactoring',   color: 0xff4400 },
+    { mode: 'default',       translationKey: 'rune.default',       icon: '◇', color: 0x6696ff },
+    { mode: 'architecture',  translationKey: 'rune.architecture',  icon: '⬡', color: 0x44bbff },
+    { mode: 'security',      translationKey: 'rune.security',      icon: '⚠', color: 0xff8800 },
+    { mode: 'optimization',  translationKey: 'rune.optimization',  icon: '⚡', color: 0x44ff88 },
+    { mode: 'refactoring',   translationKey: 'rune.refactoring',   icon: '🔥', color: 0xff4400 },
 ];
 
-let runeContainer: Container;
+const TOOLBAR_BTN_SIZE = 34;
+const TOOLBAR_GAP = 4;
+const TOOLBAR_PAD = 8;
+const TOOLBAR_Y = 10;
+
+let toolbarContainer: Container;
+let tooltipContainer: Container;
+let tooltipBg: Graphics;
+let tooltipText: Text;
 
 function initRuneUI() {
-    runeContainer = new Container();
-    runeContainer.position.set(16, 16);
-    uiContainer.addChild(runeContainer);
+    // ── ヘッダーバーコンテナ (Rune + separator + Layout を1列に配置) ──
+    toolbarContainer = new Container();
+    toolbarContainer.position.set(TOOLBAR_PAD, TOOLBAR_Y);
+    uiContainer.addChild(toolbarContainer);
 
-    RUNE_BUTTONS.forEach((btn, i) => {
-        const btnContainer = new Container();
-        btnContainer.position.set(0, i * 36);
-        btnContainer.eventMode = 'static';
-        btnContainer.cursor = 'pointer';
-
-        // 背景
-        const bg = new Graphics();
-        bg.roundRect(0, 0, 160, 30, 6);
-        const isActive = state.runeMode === btn.mode;
-        bg.fill({ color: isActive ? btn.color : 0x151830, alpha: isActive ? 0.35 : 0.6 });
-        bg.stroke({ width: 1, color: btn.color, alpha: isActive ? 0.9 : 0.3 });
-        btnContainer.addChild(bg);
-
-        // テキスト
-        const text = new Text({
-            text: t(btn.translationKey),
-            style: new TextStyle({
-                fontSize: 11,
-                fill: isActive ? 0xffffff : btn.color,
-                fontFamily: 'Consolas, monospace',
-            }),
-        });
-        text.position.set(8, 7);
-        btnContainer.addChild(text);
-
-        // クリックイベント
-        btnContainer.on('pointertap', () => {
-            state.runeMode = btn.mode;
-            sendMessage({ type: 'RUNE_MODE_CHANGE', payload: { mode: btn.mode } });
-            refreshRuneUI();
-            renderGraph();
-        });
-
-        runeContainer.addChild(btnContainer);
+    // ── ツールチップ (共有) ──
+    tooltipContainer = new Container();
+    tooltipContainer.visible = false;
+    tooltipBg = new Graphics();
+    tooltipContainer.addChild(tooltipBg);
+    tooltipText = new Text({
+        text: '',
+        style: new TextStyle({ fontSize: 11, fill: 0xd0d8ff, fontFamily: 'system-ui, -apple-system, sans-serif' }),
     });
+    tooltipText.position.set(8, 5);
+    tooltipContainer.addChild(tooltipText);
+    uiContainer.addChild(tooltipContainer);
+
+    refreshRuneUI();
 }
 
-/** Rune ボタンの表示を更新 */
+/** Rune + Layout ヘッダーバーを再描画 */
 function refreshRuneUI() {
-    runeContainer.removeChildren();
-    // 再描画（状態に基づく）
-    RUNE_BUTTONS.forEach((btn, i) => {
-        const btnContainer = new Container();
-        btnContainer.position.set(0, i * 36);
-        btnContainer.eventMode = 'static';
-        btnContainer.cursor = 'pointer';
+    toolbarContainer.removeChildren();
 
-        const bg = new Graphics();
-        bg.roundRect(0, 0, 160, 30, 6);
-        const isActive = state.runeMode === btn.mode;
-        bg.fill({ color: isActive ? btn.color : 0x151830, alpha: isActive ? 0.35 : 0.6 });
-        bg.stroke({ width: 1, color: btn.color, alpha: isActive ? 0.9 : 0.3 });
-        btnContainer.addChild(bg);
+    let xOffset = 0;
 
-        const text = new Text({
-            text: t(btn.translationKey),
-            style: new TextStyle({
-                fontSize: 11,
-                fill: isActive ? 0xffffff : btn.color,
-                fontFamily: 'Consolas, monospace',
-            }),
-        });
-        text.position.set(8, 7);
-        btnContainer.addChild(text);
-
-        btnContainer.on('pointertap', () => {
+    // ── Rune ボタン ──
+    for (const btn of RUNE_BUTTONS) {
+        const bc = createToolbarButton(btn.icon, btn.color, state.runeMode === btn.mode, t(btn.translationKey), xOffset);
+        bc.on('pointertap', () => {
             state.runeMode = btn.mode;
             sendMessage({ type: 'RUNE_MODE_CHANGE', payload: { mode: btn.mode } });
             refreshRuneUI();
             renderGraph();
         });
+        toolbarContainer.addChild(bc);
+        xOffset += TOOLBAR_BTN_SIZE + TOOLBAR_GAP;
+    }
 
-        runeContainer.addChild(btnContainer);
+    // ── セパレータ ──
+    const sep = new Graphics();
+    sep.moveTo(xOffset + 2, 4);
+    sep.lineTo(xOffset + 2, TOOLBAR_BTN_SIZE - 4);
+    sep.stroke({ width: 1, color: 0x334466, alpha: 0.5 });
+    toolbarContainer.addChild(sep);
+    xOffset += 10;
+
+    // ── Layout ボタン ──
+    for (const btn of LAYOUT_BUTTONS) {
+        const bc = createToolbarButton(btn.icon, btn.color, state.layoutMode === btn.mode, t(btn.translationKey), xOffset);
+        bc.on('pointertap', () => {
+            switchLayoutMode(btn.mode);
+            refreshRuneUI();
+        });
+        toolbarContainer.addChild(bc);
+        xOffset += TOOLBAR_BTN_SIZE + TOOLBAR_GAP;
+    }
+}
+
+/** ヘッダーバー用アイコンボタンを生成 */
+function createToolbarButton(icon: string, color: number, isActive: boolean, tooltip: string, x: number): Container {
+    const bc = new Container();
+    bc.position.set(x, 0);
+    bc.eventMode = 'static';
+    bc.cursor = 'pointer';
+
+    const bg = new Graphics();
+    bg.roundRect(0, 0, TOOLBAR_BTN_SIZE, TOOLBAR_BTN_SIZE, 8);
+    bg.fill({ color: isActive ? color : 0x151830, alpha: isActive ? 0.35 : 0.7 });
+    bg.stroke({ width: 1.5, color: color, alpha: isActive ? 0.9 : 0.25 });
+    bc.addChild(bg);
+
+    // アクティブインジケータ (下部のドット)
+    if (isActive) {
+        const dot = new Graphics();
+        dot.circle(TOOLBAR_BTN_SIZE / 2, TOOLBAR_BTN_SIZE - 3, 2);
+        dot.fill({ color: color, alpha: 1 });
+        bc.addChild(dot);
+    }
+
+    const iconText = new Text({
+        text: icon,
+        style: new TextStyle({ fontSize: 15, fill: isActive ? 0xffffff : color }),
     });
+    iconText.anchor.set(0.5, 0.5);
+    iconText.position.set(TOOLBAR_BTN_SIZE / 2, TOOLBAR_BTN_SIZE / 2 - 1);
+    bc.addChild(iconText);
+
+    // ツールチップ表示/非表示
+    bc.on('pointerover', () => {
+        showTooltip(tooltip, x + TOOLBAR_PAD, TOOLBAR_Y + TOOLBAR_BTN_SIZE + 6);
+    });
+    bc.on('pointerout', hideTooltip);
+
+    return bc;
+}
+
+function showTooltip(text: string, x: number, y: number) {
+    tooltipText.text = text;
+    const w = tooltipText.width + 16;
+    const h = 24;
+    tooltipBg.clear();
+    tooltipBg.roundRect(0, 0, w, h, 5);
+    tooltipBg.fill({ color: 0x0f1228, alpha: 0.92 });
+    tooltipBg.stroke({ width: 1, color: 0x334466, alpha: 0.6 });
+    tooltipContainer.position.set(x, y);
+    tooltipContainer.visible = true;
+}
+
+function hideTooltip() {
+    tooltipContainer.visible = false;
 }
 
 // ─── Breadcrumbs (探索履歴パネル) ────────────────────────
 let breadcrumbContainer: Container;
 
-// ─── Layout Mode UI (V3) ────────────────────────────────
+// ─── Layout Mode UI (V3 — ヘッダーバー統合) ────────────
 interface LayoutButton {
     mode: LayoutMode;
     translationKey: TranslationKey;
+    icon: string;
     color: number;
 }
 
 const LAYOUT_BUTTONS: LayoutButton[] = [
-    { mode: 'force',   translationKey: 'layout.mandala',   color: 0x8866ff },
-    { mode: 'tree',    translationKey: 'layout.yggdrasil', color: 0x44cc88 },
-    { mode: 'balloon', translationKey: 'layout.bubble',    color: 0x6699ff },
+    { mode: 'force',   translationKey: 'layout.mandala',   icon: '◎', color: 0x8866ff },
+    { mode: 'tree',    translationKey: 'layout.yggdrasil', icon: '🌳', color: 0x44cc88 },
+    { mode: 'balloon', translationKey: 'layout.bubble',    icon: '◉', color: 0x6699ff },
 ];
 
-let layoutContainer: Container;
-
 function initLayoutUI() {
-    layoutContainer = new Container();
-    // Rune ボタンの下に配置 (5つ × 36px + 余白)
-    layoutContainer.position.set(16, 16 + RUNE_BUTTONS.length * 36 + 20);
-    uiContainer.addChild(layoutContainer);
-    refreshLayoutUI();
+    // Layout ボタンは refreshRuneUI() 内でヘッダーバーに統合描画される
+    // 個別の Container は不要
 }
 
 /** レイアウトモード切り替え */
@@ -1492,55 +1757,17 @@ function switchLayoutMode(newMode: LayoutMode) {
     state.isLoading = true;
     startParticleLoading();
     updateStatusText();
-    refreshLayoutUI();
 }
 
-/** Layout ボタンの表示を更新 */
+/** Layout ボタンの表示を更新 (ヘッダーバー内で refreshRuneUI に統合) */
 function refreshLayoutUI() {
-    layoutContainer.removeChildren();
-
-    // セパレータライン
-    const sep = new Graphics();
-    sep.moveTo(4, -10);
-    sep.lineTo(156, -10);
-    sep.stroke({ width: 1, color: 0x334466, alpha: 0.4 });
-    layoutContainer.addChild(sep);
-
-    LAYOUT_BUTTONS.forEach((btn, i) => {
-        const btnContainer = new Container();
-        btnContainer.position.set(0, i * 36);
-        btnContainer.eventMode = 'static';
-        btnContainer.cursor = 'pointer';
-
-        const isActive = state.layoutMode === btn.mode;
-        const bg = new Graphics();
-        bg.roundRect(0, 0, 160, 30, 6);
-        bg.fill({ color: isActive ? btn.color : 0x151830, alpha: isActive ? 0.35 : 0.6 });
-        bg.stroke({ width: 1, color: btn.color, alpha: isActive ? 0.9 : 0.3 });
-        btnContainer.addChild(bg);
-
-        const text = new Text({
-            text: t(btn.translationKey),
-            style: new TextStyle({
-                fontSize: 11,
-                fill: isActive ? 0xffffff : btn.color,
-                fontFamily: 'Consolas, monospace',
-            }),
-        });
-        text.position.set(8, 7);
-        btnContainer.addChild(text);
-
-        btnContainer.on('pointertap', () => {
-            switchLayoutMode(btn.mode);
-        });
-
-        layoutContainer.addChild(btnContainer);
-    });
+    refreshRuneUI();
 }
 
 function initBreadcrumbs() {
     breadcrumbContainer = new Container();
-    breadcrumbContainer.position.set(170, window.innerHeight - 70);
+    // ヘッダーバーの下に配置
+    breadcrumbContainer.position.set(TOOLBAR_PAD, TOOLBAR_Y + TOOLBAR_BTN_SIZE + 8);
     uiContainer.addChild(breadcrumbContainer);
 }
 
@@ -1602,8 +1829,8 @@ function refreshBreadcrumbs() {
         xOffset += labelWidth + 4;
     }
 
-    // 位置更新 (画面下部、ステータスバーの上)
-    breadcrumbContainer.position.set(170, window.innerHeight - 70);
+    // 位置更新 (ヘッダーバーの下)
+    breadcrumbContainer.position.set(TOOLBAR_PAD, TOOLBAR_Y + TOOLBAR_BTN_SIZE + 8);
 }
 
 // ─── Search Overlay (V3 Phase 2) ────────────────────────
@@ -1898,6 +2125,8 @@ function openDetailPanel(nodeId: string) {
 
     // Optimization
     if (node.isBarrel || (node.treeShakingRisk !== undefined && node.treeShakingRisk > 0)) {
+        const risk = node.treeShakingRisk || 0;
+        const riskClass = risk >= 50 ? 'dp-risk-high' : risk >= 25 ? 'dp-risk-mid' : 'dp-risk-low';
         html += `<div class="dp-section">
             <div class="dp-label">${t('dp.optimization')}</div>
             <div class="dp-value">
@@ -1905,11 +2134,38 @@ function openDetailPanel(nodeId: string) {
                 ${node.treeShakingRisk !== undefined ? `<span class="dp-badge">Tree-shaking risk: ${node.treeShakingRisk}</span>` : ''}
                 ${node.hasSideEffects ? '<span class="dp-badge" style="color:#ff4400">Side effects</span>' : ''}
             </div>
+            <div class="dp-risk-meter ${riskClass}"><div class="dp-risk-meter-fill" style="width:${Math.min(100, risk)}%"></div></div>
+            <div class="dp-risk-label">${risk < 25 ? 'Low risk' : risk < 50 ? 'Medium risk' : 'High risk'}</div>
+        </div>`;
+    }
+
+    // Activity Bar (Git commit count visualization)
+    if (node.gitCommitCount !== undefined && node.gitCommitCount > 0) {
+        const maxCommits = 30;
+        const barCount = 8;
+        const commitNorm = Math.min(1, node.gitCommitCount / maxCommits);
+        // 疑似的にバーを生成 (実際のコミット履歴データがないため、ノイズで表現)
+        let bars = '';
+        for (let b = 0; b < barCount; b++) {
+            const h = Math.max(2, Math.round(commitNorm * 22 * (0.3 + Math.random() * 0.7)));
+            const heatHue = commitNorm > 0.5 ? '0' : '30'; // red or orange
+            bars += `<div class="bar" style="height:${h}px;background:hsla(${heatHue},80%,${50 + b * 3}%,0.7)"></div>`;
+        }
+        html += `<div class="dp-section">
+            <div class="dp-label">Activity</div>
+            <div class="dp-activity-bar">${bars}</div>
+            <div class="dp-risk-label">${node.gitCommitCount} commits — ${commitNorm > 0.6 ? 'Hot spot 🔥' : commitNorm > 0.3 ? 'Active' : 'Stable'}</div>
         </div>`;
     }
 
     detailContent.innerHTML = html;
     detailPanel.classList.add('visible');
+
+    // Smart Camera: パネル展開時にフォーカスノードをパネル分左にオフセット
+    const focusPos = state.nodePositions.get(nodeId);
+    if (focusPos) {
+        animateViewportTo(focusPos.x, focusPos.y);
+    }
 
     // 依存リスト内のクリックでSummon
     const depLinks = detailContent.querySelectorAll('[data-node-id]');
@@ -2047,6 +2303,9 @@ function updateStatusText() {
 function renderError() {
     nodeContainer.removeChildren();
     edgeContainer.removeChildren();
+
+    // Error Flash (V5: 画面赤明滅)
+    triggerErrorFlash();
 
     const style = new TextStyle({
         fontSize: 20,

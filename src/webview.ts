@@ -33,7 +33,8 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             width: 100%;
             height: 100%;
             overflow: hidden;
-            background: #0a0c1e;
+            background: #080a18;
+            font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
         }
         canvas {
             display: block;
@@ -46,7 +47,7 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            background: #0a0c1e;
+            background: #080a18;
             z-index: 1000;
             transition: opacity 0.6s ease;
         }
@@ -65,8 +66,9 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
         .loading-text {
             margin-top: 20px;
             color: rgba(0, 220, 255, 0.7);
-            font-family: Consolas, 'Courier New', monospace;
+            font-family: system-ui, -apple-system, sans-serif;
             font-size: 14px;
+            letter-spacing: 0.5px;
         }
         @keyframes spin {
             to { transform: rotate(360deg); }
@@ -92,18 +94,18 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
         #search-input {
             width: 360px;
             padding: 8px 14px 8px 32px;
-            background: rgba(15, 18, 40, 0.92);
+            background: rgba(10, 12, 28, 0.94);
             border: 1px solid rgba(100, 150, 255, 0.35);
             border-radius: 8px;
             color: #d0d8ff;
-            font-family: Consolas, 'Courier New', monospace;
+            font-family: system-ui, -apple-system, sans-serif;
             font-size: 13px;
             outline: none;
-            backdrop-filter: blur(10px);
+            backdrop-filter: blur(16px);
         }
         #search-input:focus {
             border-color: rgba(100, 200, 255, 0.7);
-            box-shadow: 0 0 12px rgba(0, 180, 255, 0.15);
+            box-shadow: 0 0 16px rgba(0, 180, 255, 0.18);
         }
         #search-input::placeholder {
             color: rgba(100, 140, 200, 0.5);
@@ -121,24 +123,24 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             right: calc(50% - 168px);
             top: 22px;
             color: rgba(100, 180, 255, 0.6);
-            font-family: Consolas, monospace;
+            font-family: system-ui, sans-serif;
             font-size: 11px;
         }
-        /* ─── Detail Panel (V3 Phase 3) ────────────────── */
+        /* ─── Detail Panel (V3 Phase 3 + V5 Dual Typography) ── */
         #detail-panel {
             position: fixed;
             top: 0; right: 0; bottom: 0;
             width: 340px;
-            background: rgba(10, 14, 32, 0.95);
-            border-left: 1px solid rgba(100, 150, 255, 0.2);
+            background: rgba(6, 8, 22, 0.97);
+            border-left: 1px solid rgba(100, 150, 255, 0.15);
             z-index: 800;
             transform: translateX(100%);
             transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
             overflow-y: auto;
-            backdrop-filter: blur(12px);
+            backdrop-filter: blur(20px);
             padding: 20px;
-            font-family: Consolas, 'Courier New', monospace;
-            color: #c0c8e0;
+            font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+            color: #c8d0e8;
         }
         #detail-panel.visible {
             transform: translateX(0);
@@ -149,12 +151,13 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             align-items: center;
             margin-bottom: 16px;
             padding-bottom: 12px;
-            border-bottom: 1px solid rgba(100, 150, 255, 0.15);
+            border-bottom: 1px solid rgba(100, 150, 255, 0.12);
         }
         #detail-panel .dp-title {
             font-size: 15px;
             color: #88ccff;
-            font-weight: normal;
+            font-weight: 600;
+            font-family: system-ui, -apple-system, sans-serif;
         }
         #detail-panel .dp-close {
             cursor: pointer;
@@ -174,19 +177,24 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
         }
         #detail-panel .dp-label {
             font-size: 10px;
-            color: rgba(120, 160, 220, 0.6);
+            color: rgba(130, 170, 230, 0.7);
             text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 4px;
+            letter-spacing: 1.2px;
+            margin-bottom: 5px;
+            font-family: system-ui, -apple-system, sans-serif;
+            font-weight: 600;
         }
         #detail-panel .dp-value {
             font-size: 12px;
-            color: #d0d8ff;
-            line-height: 1.5;
+            color: #d8e0f4;
+            line-height: 1.6;
+            font-family: system-ui, -apple-system, sans-serif;
         }
         #detail-panel .dp-value.path {
-            color: rgba(100, 180, 255, 0.8);
+            color: rgba(100, 180, 255, 0.85);
             word-break: break-all;
+            font-family: Consolas, 'Courier New', monospace;
+            font-size: 11px;
         }
         #detail-panel .dp-badge {
             display: inline-block;
@@ -194,8 +202,9 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             border-radius: 4px;
             font-size: 10px;
             margin: 2px 4px 2px 0;
-            background: rgba(100, 150, 255, 0.12);
-            border: 1px solid rgba(100, 150, 255, 0.2);
+            background: rgba(100, 150, 255, 0.1);
+            border: 1px solid rgba(100, 150, 255, 0.18);
+            font-family: system-ui, sans-serif;
         }
         #detail-panel .dp-warning {
             color: #ff8844;
@@ -212,19 +221,55 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             overflow-y: auto;
         }
         #detail-panel .dp-dep-list li {
-            padding: 3px 0;
+            padding: 4px 0;
             font-size: 11px;
-            color: rgba(180, 200, 255, 0.7);
+            color: rgba(180, 200, 255, 0.75);
             cursor: pointer;
-            transition: color 0.15s;
+            transition: color 0.15s, padding-left 0.15s;
         }
         #detail-panel .dp-dep-list li:hover {
             color: #88ccff;
+            padding-left: 4px;
         }
-        /* ─── Code Peek (V3.5) ─────────────────────────── */
+        /* ─── Risk Meter (V5 Micrograph) ───────────────── */
+        .dp-risk-meter {
+            height: 6px;
+            border-radius: 3px;
+            background: rgba(255,255,255,0.06);
+            overflow: hidden;
+            margin: 6px 0 2px;
+        }
+        .dp-risk-meter-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.4s ease;
+        }
+        .dp-risk-low  .dp-risk-meter-fill { background: linear-gradient(90deg, #22cc66, #44ff88); }
+        .dp-risk-mid  .dp-risk-meter-fill { background: linear-gradient(90deg, #ccaa22, #ffcc44); }
+        .dp-risk-high .dp-risk-meter-fill { background: linear-gradient(90deg, #cc3322, #ff5544); }
+        .dp-risk-label {
+            font-size: 9px;
+            color: rgba(180,200,240,0.6);
+            font-family: system-ui, sans-serif;
+        }
+        /* ─── Activity Bar (V5 Micrograph) ─────────────── */
+        .dp-activity-bar {
+            display: flex;
+            align-items: flex-end;
+            gap: 2px;
+            height: 24px;
+            margin: 6px 0 2px;
+        }
+        .dp-activity-bar .bar {
+            width: 6px;
+            border-radius: 2px 2px 0 0;
+            min-height: 2px;
+            transition: height 0.3s ease;
+        }
+        /* ─── Code Peek (V3.5 + V5 Dual Typography) ───── */
         #detail-panel .dp-code-peek {
-            background: rgba(5, 8, 20, 0.9);
-            border: 1px solid rgba(100, 150, 255, 0.12);
+            background: rgba(4, 6, 16, 0.95);
+            border: 1px solid rgba(100, 150, 255, 0.1);
             border-radius: 6px;
             padding: 12px;
             overflow-x: auto;
@@ -244,7 +289,7 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
         #detail-panel .dp-code-peek .cp-line-nums {
             position: absolute;
             top: 12px; left: 12px;
-            color: rgba(100, 140, 200, 0.3);
+            color: rgba(100, 140, 200, 0.25);
             font-family: Consolas, 'Courier New', monospace;
             font-size: 11px;
             line-height: 1.5;
