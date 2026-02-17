@@ -13,6 +13,20 @@ import type {
 import * as fs from 'fs';
 
 export function activate(context: vscode.ExtensionContext) {
+    // ─── ASCII Art Banner ───────────────────────────────
+    console.log(`
+\x1b[36m
+   ╔═══════════════════════════════════════════╗
+   ║                                           ║
+   ║     ✦  C O D E   G R I M O I R E  ✦     ║
+   ║                                           ║
+   ║   ◇ ─── ⬡ ─── ⚠ ─── ⚡ ─── 🔥 ───  ◇   ║
+   ║                                           ║
+   ║    Visualize your code as a magic circle  ║
+   ║                                           ║
+   ╚═══════════════════════════════════════════╝
+\x1b[0m`);
+
     let panel: vscode.WebviewPanel | undefined = undefined;
     let cachedGraph: DependencyGraph | undefined = undefined;
 

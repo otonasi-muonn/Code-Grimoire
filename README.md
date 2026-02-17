@@ -1,71 +1,153 @@
-# codegrimoire README
+<p align="center">
+  <img src="https://img.shields.io/badge/VS%20Code-^1.100.0-007ACC?logo=visual-studio-code" alt="VS Code">
+  <img src="https://img.shields.io/badge/PixiJS-8.6.6-e72264?logo=pixi.js" alt="PixiJS">
+  <img src="https://img.shields.io/badge/TypeScript-5.9-3178c6?logo=typescript" alt="TypeScript">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+</p>
 
-This is the README for your extension "codegrimoire". After writing up a brief description, we recommend including the following sections.
+# 🔮 Code Grimoire
 
-## Features
-
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
-
-For example if there is an image subfolder under your extension project workspace:
-
-\!\[feature X\]\(images/feature-x.png\)
-
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
-
-## Requirements
-
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
-
-## Extension Settings
-
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
-
-For example:
-
-This extension contributes the following settings:
-
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
-
-## Known Issues
-
-Calling out known issues can help limit users opening duplicate issues against your extension.
-
-## Release Notes
-
-Users appreciate release notes as you update your extension.
-
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
+> **コードを魔法陣に変換する** — TypeScript / JavaScript の依存関係グラフを、魔導書風のインタラクティブな可視化で表示する VS Code 拡張機能。
 
 ---
 
-## Following extension guidelines
+## ✨ Features
 
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
+| Feature | Description |
+|---------|-------------|
+| 🌀 **Magic Circle Graph** | d3-force による力学シミュレーションで依存関係を魔法陣風に配置 |
+| 🎨 **Rune Modes** | `Arcane` / `Celestial` / `Verdant` / `Inferno` / `Abyss` — 5 種のカラーテーマ |
+| 📐 **Layout Modes** | `Force` / `Radial` / `Hierarchy` — 3 種のレイアウトアルゴリズム |
+| 🔍 **Fuzzy Search** | ファイル名インクリメンタル検索 + ディム表示 |
+| 🗺️ **Minimap** | 全体マップ + 現在のビューポートインジケータ |
+| 📊 **Detail Panel** | ノード詳細 + Code Peek（ソースコードプレビュー） |
+| 🧭 **Breadcrumbs** | 探索履歴をパンくずリストで表示 + クリックで戻る |
+| ⚡ **Edge Flow** | 選択ノードの依存方向をアニメーション付きで可視化 |
+| 💫 **Particle Effects** | 読み込み中のパーティクルローディング + クリック時の衝撃波 |
+| 🌐 **i18n** | 日本語 / English 自動切り替え |
+| 📱 **Responsive** | 小さなパネルでも快適に操作可能なレスポンシブデザイン |
 
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
+---
 
-## Working with Markdown
+## 🏗️ Architecture
 
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
+```
+src/
+├── extension.ts          … Extension Host (パネル管理 + Analyzer 起動)
+├── analyzer.ts           … TypeScript AST 解析 → 依存グラフ生成
+├── webview.ts            … Webview HTML/CSS テンプレート
+└── webview/
+    ├── main.ts           … Orchestrator (全モジュールの配線)
+    ├── worker.ts         … Web Worker (d3-force シミュレーション)
+    ├── core/
+    │   ├── state.ts      … AppState シングルトン
+    │   ├── i18n.ts       … 国際化 (ja/en)
+    │   ├── lod.ts        … Level of Detail 判定
+    │   ├── vscode-api.ts … VS Code API ラッパー
+    │   └── worker-bridge.ts … Worker 通信ブリッジ
+    ├── renderer/
+    │   ├── graph.ts      … ノード/エッジ描画 + インタラクション
+    │   └── effects.ts    … パーティクル/衝撃波/エッジフロー
+    ├── ui/
+    │   ├── toolbar.ts    … Rune + Layout ヘッダーバー
+    │   ├── search.ts     … 検索オーバーレイ
+    │   ├── breadcrumbs.ts … パンくずナビゲーション
+    │   ├── minimap.ts    … ミニマップ
+    │   ├── detail-panel.ts … 詳細パネル + Code Peek
+    │   └── help.ts       … ヘルプ/凡例オーバーレイ
+    └── utils/
+        ├── color.ts      … カラーユーティリティ
+        ├── font.ts       … BitmapFont ハイブリッドシステム
+        └── drawing.ts    … 描画ヘルパー
+```
 
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
+**設計パターン**: 各モジュールは `setXxxContext()` 関数で依存を受け取る DI パターンを採用し、循環参照を回避しています。
 
-## For more information
+---
 
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
+## 🚀 Getting Started
 
-**Enjoy!**
+### Prerequisites
+
+- **VS Code** ≥ 1.100.0
+- **Node.js** ≥ 18
+
+### Install & Build
+
+```bash
+git clone https://github.com/your-org/Code-Grimoire.git
+cd Code-Grimoire
+npm install
+npm run compile
+```
+
+### Run (Debug)
+
+1. VS Code で `F5` を押す
+2. Extension Development Host が起動
+3. コマンドパレット → `CodeGrimoire: Open Grimoire`
+4. TypeScript プロジェクトの依存グラフが魔法陣として表示 ✨
+
+---
+
+## ⌨️ Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `Ctrl + F` / `Cmd + F` | 検索トグル |
+| `Escape` | 検索閉じる / 詳細パネル閉じる |
+| `H` | ヘルプ表示トグル |
+| `1`–`5` | Rune モード切替 |
+| `R` | レイアウト切替 (Force → Radial → Hierarchy) |
+
+---
+
+## 🎨 Rune Modes
+
+| Mode | Theme | Hue Range |
+|------|-------|-----------|
+| 🟣 **Arcane** | 神秘的な紫 | Purple — Violet |
+| 🔵 **Celestial** | 天空の青 | Cyan — Blue |
+| 🟢 **Verdant** | 生命の緑 | Green — Emerald |
+| 🔴 **Inferno** | 業火の赤 | Red — Orange |
+| ⚫ **Abyss** | 深淵の闇 | Dark — Monochrome |
+
+---
+
+## 🔧 Build System
+
+esbuild による **Triple Build**:
+
+| Target | Format | Output |
+|--------|--------|--------|
+| Extension Host | CJS | `out/extension.js` |
+| Webview | IIFE | `out/webview/main.js` |
+| Web Worker | IIFE | `out/webview/worker.js` |
+
+### Scripts
+
+```bash
+npm run compile    # 本番ビルド
+npm run watch      # ファイル変更監視ビルド
+npm run lint       # ESLint チェック
+npm run test       # テスト実行
+```
+
+---
+
+## 📦 Tech Stack
+
+| Library | Version | Purpose |
+|---------|---------|---------|
+| [PixiJS](https://pixijs.com/) | 8.6.6 | WebGL レンダリング |
+| [pixi-viewport](https://github.com/davidfig/pixi-viewport) | 6.0.3 | 無限キャンバス (drag/pinch/wheel) |
+| [d3-force](https://d3js.org/) | 3.0.0 | 力学シミュレーション |
+| [d3-hierarchy](https://d3js.org/) | 3.1.2 | 階層レイアウト |
+| [TypeScript](https://www.typescriptlang.org/) | 5.9.3 | 型安全な開発 |
+| [esbuild](https://esbuild.github.io/) | 0.24.0 | 高速バンドラー |
+
+---
+
+## 📄 License
+
+MIT © Code Grimoire Contributors

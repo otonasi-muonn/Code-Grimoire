@@ -92,7 +92,7 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             pointer-events: auto;
         }
         #search-input {
-            width: 360px;
+            width: min(360px, 80vw);
             padding: 8px 14px 8px 32px;
             background: rgba(10, 12, 28, 0.94);
             border: 1px solid rgba(100, 150, 255, 0.35);
@@ -130,7 +130,7 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
         #detail-panel {
             position: fixed;
             top: 0; right: 0; bottom: 0;
-            width: 340px;
+            width: min(340px, 85vw);
             background: rgba(6, 8, 22, 0.97);
             border-left: 1px solid rgba(100, 150, 255, 0.15);
             z-index: 800;
@@ -312,7 +312,7 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             border-radius: 12px;
             padding: 28px 34px;
             max-width: 640px;
-            width: 92%;
+            width: min(92%, 92vw);
             max-height: 80vh;
             overflow-y: auto;
             color: #c8d0e8;
