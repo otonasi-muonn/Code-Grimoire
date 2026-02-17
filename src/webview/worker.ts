@@ -1,6 +1,6 @@
 // ============================================================
-// Code Grimoire - D3 Force Simulation Web Worker
-// メインスレッドから分離して物理レイアウト計算を実行する
+// Code Grimoire - D3 Force / Hierarchy Simulation Web Worker
+// メインスレッドから分離してレイアウト計算を実行する
 // ============================================================
 import {
     forceSimulation,
@@ -8,14 +8,20 @@ import {
     forceManyBody,
     forceCollide,
     type Simulation,
-    type SimulationNodeDatum,
     type SimulationLinkDatum,
 } from 'd3-force';
+import {
+    hierarchy,
+    tree as d3Tree,
+    pack as d3Pack,
+    type HierarchyNode,
+} from 'd3-hierarchy';
 import type {
     MainToWorkerMessage,
     WorkerToMainMessage,
     WorkerNode,
     WorkerEdge,
+    LayoutMode,
 } from '../shared/types.js';
 
 // ─── 定数 ────────────────────────────────────────────────
@@ -32,27 +38,38 @@ const ALPHA_DECAY = 0.05;
 /** Alpha Min: これ以下で停止 */
 const ALPHA_MIN = 0.001;
 
+/** モーフィングアニメーションのフレーム数 */
+const MORPH_FRAMES = 40;
+/** モーフィング1フレームの間隔 (ms) */
+const MORPH_INTERVAL = 16;
+
 // ─── 状態 ────────────────────────────────────────────────
 let simulation: Simulation<WorkerNode, SimulationLinkDatum<WorkerNode>> | null = null;
 let nodes: WorkerNode[] = [];
 let edges: WorkerEdge[] = [];
 let nodeIndexMap: Map<string, number> = new Map();
+let currentLayoutMode: LayoutMode = 'force';
+let currentFocusNodeId: string | null = null;
 
 // ─── メッセージ受信 ──────────────────────────────────────
 self.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
     const msg = event.data;
     switch (msg.type) {
         case 'INIT':
-            initSimulation(msg.payload.nodes, msg.payload.edges, msg.payload.focusNodeId);
+            currentLayoutMode = msg.payload.layoutMode || 'force';
+            initLayout(msg.payload.nodes, msg.payload.edges, msg.payload.focusNodeId);
             break;
         case 'FOCUS':
             changeFocus(msg.payload.focusNodeId);
             break;
+        case 'LAYOUT_CHANGE':
+            switchLayout(msg.payload.mode);
+            break;
     }
 };
 
-// ─── シミュレーション初期化 ──────────────────────────────
-function initSimulation(
+// ─── メインレイアウト初期化 ──────────────────────────────
+function initLayout(
     inNodes: WorkerNode[],
     inEdges: WorkerEdge[],
     focusNodeId: string | null
@@ -60,6 +77,7 @@ function initSimulation(
     // ノードとエッジを保存
     nodes = inNodes.map(n => ({ ...n }));
     edges = inEdges.map(e => ({ ...e }));
+    currentFocusNodeId = focusNodeId;
 
     // インデックスマップ構築
     nodeIndexMap.clear();
@@ -68,7 +86,20 @@ function initSimulation(
     // リング割り当て
     assignRings(focusNodeId);
 
-    // d3-force リンク用のデータ (source/target は ID 文字列)
+    if (currentLayoutMode === 'force') {
+        initForceSimulation(focusNodeId);
+    } else {
+        // tree / balloon: 静的レイアウトを計算して送信
+        const targets = calculateStaticLayout(currentLayoutMode);
+        applyPositions(targets);
+        sendPositions(1.0);
+        sendDone();
+    }
+}
+
+// ─── Force シミュレーション初期化 ────────────────────────
+function initForceSimulation(focusNodeId: string | null): void {
+    // d3-force リンク用のデータ
     const links: SimulationLinkDatum<WorkerNode>[] = edges
         .filter(e => nodeIndexMap.has(e.source) && nodeIndexMap.has(e.target))
         .map(e => ({
@@ -94,46 +125,249 @@ function initSimulation(
             .strength(0.7)
         )
         .force('ring', ringForce(0.6))
-        .stop();  // 自動ティックを止めてマニュアル制御
+        .stop();
 
-    // ─── Warm-up: 事前計算 ───────────────────────────────
-    // ユーザーに振動を見せずに一気に収束させる
+    // Warm-up
     simulation.alpha(1);
     for (let i = 0; i < WARMUP_TICKS; i++) {
         simulation.tick();
     }
 
-    // Warm-up 完了後の最終座標を送信
     sendPositions(1.0);
     sendDone();
 }
 
 // ─── フォーカス変更 (Summoning) ──────────────────────────
 function changeFocus(focusNodeId: string): void {
-    if (!simulation) { return; }
-
-    // リング再割り当て
+    currentFocusNodeId = focusNodeId;
     assignRings(focusNodeId);
 
-    // シミュレーションを再加熱して再収束
-    simulation.alpha(0.8);
-    for (let i = 0; i < WARMUP_TICKS; i++) {
-        simulation.tick();
+    if (currentLayoutMode === 'force') {
+        if (!simulation) { return; }
+        simulation.alpha(0.8);
+        for (let i = 0; i < WARMUP_TICKS; i++) {
+            simulation.tick();
+        }
+        sendPositions(1.0);
+        sendDone();
+    } else {
+        // 静的レイアウトの場合はモーフィングで移動
+        const targets = calculateStaticLayout(currentLayoutMode);
+        morphToPositions(targets);
     }
-
-    sendPositions(1.0);
-    sendDone();
 }
 
-// ─── リング割り当てロジック ──────────────────────────────
+// ─── レイアウトモード切り替え (V3) ──────────────────────
+function switchLayout(newMode: LayoutMode): void {
+    if (newMode === currentLayoutMode) { return; }
+    currentLayoutMode = newMode;
+
+    if (newMode === 'force') {
+        // Force に戻す場合: 現在の座標を初期値として再構築
+        initForceSimulation(currentFocusNodeId);
+    } else {
+        // tree / balloon: 静的レイアウトへモーフィング
+        if (simulation) {
+            simulation.stop();
+            simulation = null;
+        }
+        const targets = calculateStaticLayout(newMode);
+        morphToPositions(targets);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// 静的レイアウト計算 (Tree / Balloon)
+// ═══════════════════════════════════════════════════════════
+
+/** ディレクトリ階層ツリーを構築 */
+interface DirTreeNode {
+    name: string;
+    children: DirTreeNode[];
+    /** 葉ノードの場合の WorkerNode ID */
+    nodeId?: string;
+    /** lineCount (Pack サイズ用) */
+    value?: number;
+}
+
+function buildDirectoryTree(): DirTreeNode {
+    const root: DirTreeNode = { name: '__root__', children: [] };
+
+    for (const node of nodes) {
+        // id はファイルパス。"/" 区切りで階層化
+        const parts = node.id.replace(/\\/g, '/').split('/').filter(Boolean);
+        let current = root;
+        for (let i = 0; i < parts.length; i++) {
+            const part = parts[i];
+            const isLeaf = i === parts.length - 1;
+            let child = current.children.find(c => c.name === part);
+            if (!child) {
+                child = { name: part, children: [] };
+                current.children.push(child);
+            }
+            if (isLeaf) {
+                child.nodeId = node.id;
+                child.value = Math.max(node.lineCount, 10);
+            }
+            current = child;
+        }
+    }
+
+    return root;
+}
+
+/** 中間ディレクトリ（子が1つだけ）を省略して直結する */
+function collapseTree(node: DirTreeNode): DirTreeNode {
+    // 葉ノード
+    if (node.children.length === 0) { return node; }
+
+    // 子を再帰的に整理
+    node.children = node.children.map(collapseTree);
+
+    // 非葉・子1つ → 直結 (ルートは除外)
+    if (node.children.length === 1 && !node.nodeId && node.name !== '__root__') {
+        const child = node.children[0];
+        return {
+            ...child,
+            name: node.name + '/' + child.name,
+        };
+    }
+
+    return node;
+}
+
+/** Tree レイアウト: 放射状ツリー (Yggdrasil) */
+function calculateTreeLayout(dirTree: DirTreeNode): Map<string, { x: number; y: number }> {
+    const root = hierarchy(dirTree)
+        .sum(d => d.value || 0)
+        .sort((a, b) => (b.value || 0) - (a.value || 0));
+
+    const treeLayout = d3Tree<DirTreeNode>()
+        .size([2 * Math.PI, Math.min(nodes.length * 8, 800)])
+        .separation((a, b) => (a.parent === b.parent ? 1 : 2) / (a.depth || 1));
+
+    treeLayout(root);
+
+    const result = new Map<string, { x: number; y: number }>();
+
+    root.each((d: HierarchyNode<DirTreeNode>) => {
+        if (d.data.nodeId) {
+            // 放射状変換: (angle, radius) → (x, y)
+            const angle = (d as any).x as number;
+            const radius = (d as any).y as number;
+            result.set(d.data.nodeId, {
+                x: radius * Math.cos(angle - Math.PI / 2),
+                y: radius * Math.sin(angle - Math.PI / 2),
+            });
+        }
+    });
+
+    return result;
+}
+
+/** Balloon レイアウト: パック円充填 (Bubble) */
+function calculateBalloonLayout(dirTree: DirTreeNode): Map<string, { x: number; y: number }> {
+    const root = hierarchy(dirTree)
+        .sum(d => d.value || 10)
+        .sort((a, b) => (b.value || 0) - (a.value || 0));
+
+    const packLayout = d3Pack<DirTreeNode>()
+        .size([1200, 1200])
+        .padding(3);
+
+    packLayout(root);
+
+    const result = new Map<string, { x: number; y: number }>();
+
+    root.each((d: HierarchyNode<DirTreeNode>) => {
+        if (d.data.nodeId) {
+            // 中央原点に平行移動 (pack は [0, size] を使う)
+            result.set(d.data.nodeId, {
+                x: (d as any).x - 600,
+                y: (d as any).y - 600,
+            });
+        }
+    });
+
+    return result;
+}
+
+/** レイアウトモードに応じた静的座標を計算 */
+function calculateStaticLayout(mode: LayoutMode): Map<string, { x: number; y: number }> {
+    const dirTree = collapseTree(buildDirectoryTree());
+    if (mode === 'tree') {
+        return calculateTreeLayout(dirTree);
+    } else {
+        return calculateBalloonLayout(dirTree);
+    }
+}
+
+/** 静的レイアウト座標を直接適用 */
+function applyPositions(targets: Map<string, { x: number; y: number }>): void {
+    for (const node of nodes) {
+        const pos = targets.get(node.id);
+        if (pos) {
+            node.x = pos.x;
+            node.y = pos.y;
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// モーフィング (座標補間アニメーション)
+// ═══════════════════════════════════════════════════════════
+
+/** 現在の座標から目標座標へ線形補間して TICK を送り続ける */
+function morphToPositions(targets: Map<string, { x: number; y: number }>): void {
+    // 開始座標を記録
+    const startPositions = nodes.map(n => ({ x: n.x || 0, y: n.y || 0 }));
+    // 目標座標
+    const targetPositions = nodes.map(n => {
+        const t = targets.get(n.id);
+        return t ? { x: t.x, y: t.y } : { x: n.x || 0, y: n.y || 0 };
+    });
+
+    let frame = 0;
+
+    const step = () => {
+        frame++;
+        const t = easeInOutCubic(frame / MORPH_FRAMES);
+
+        for (let i = 0; i < nodes.length; i++) {
+            nodes[i].x = startPositions[i].x + (targetPositions[i].x - startPositions[i].x) * t;
+            nodes[i].y = startPositions[i].y + (targetPositions[i].y - startPositions[i].y) * t;
+        }
+
+        sendPositions(frame / MORPH_FRAMES);
+
+        if (frame >= MORPH_FRAMES) {
+            // モーフィング完了
+            sendDone();
+        } else {
+            setTimeout(step, MORPH_INTERVAL);
+        }
+    };
+
+    step();
+}
+
+/** Ease In-Out Cubic イージング */
+function easeInOutCubic(t: number): number {
+    return t < 0.5
+        ? 4 * t * t * t
+        : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+// ═══════════════════════════════════════════════════════════
+// リング割り当て & カスタムフォース (Force モード用)
+// ═══════════════════════════════════════════════════════════
+
 function assignRings(focusNodeId: string | null): void {
     if (!focusNodeId || !nodeIndexMap.has(focusNodeId)) {
-        // フォーカスが無い場合は全て global
         nodes.forEach(n => { n.ring = 'global'; });
         return;
     }
 
-    // 直接依存 (Context): focusNode が import しているもの、または focusNode を import しているもの
     const directDeps = new Set<string>();
     edges.forEach(e => {
         if (e.source === focusNodeId) { directDeps.add(e.target); }
@@ -151,27 +385,22 @@ function assignRings(focusNodeId: string | null): void {
     });
 }
 
-// ─── カスタムフォース: 3層同心円拘束 ────────────────────
 function ringForce(strength: number) {
     let cachedNodes: WorkerNode[] = [];
 
     const force = (alpha: number) => {
         for (const node of cachedNodes) {
             const targetRadius = RING_RADII[node.ring] || RING_RADII.global;
-
-            // 現在の距離
             const x = node.x || 0;
             const y = node.y || 0;
             const currentRadius = Math.sqrt(x * x + y * y) || 1;
 
-            // Focus ノードは原点に固定
             if (node.ring === 'focus') {
                 node.vx = (node.vx || 0) + (0 - x) * strength * alpha * 3;
                 node.vy = (node.vy || 0) + (0 - y) * strength * alpha * 3;
                 continue;
             }
 
-            // リングへの引力: 現在の角度を保ったまま目標半径へ
             const ratio = (targetRadius - currentRadius) / currentRadius;
             node.vx = (node.vx || 0) + x * ratio * strength * alpha;
             node.vy = (node.vy || 0) + y * ratio * strength * alpha;
@@ -198,7 +427,6 @@ function sendPositions(progress: number): void {
         payload: { positions, progress },
     };
 
-    // Transferable としてバッファを渡す (ゼロコピー)
     (self as any).postMessage(msg, [positions.buffer]);
 }
 

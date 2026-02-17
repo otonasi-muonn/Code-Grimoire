@@ -123,6 +123,12 @@ export type RuneMode =
     | 'optimization'     // 最適化の紋章: Tree-shaking スコア
     | 'refactoring';     // 再生の紋章: Git Hotspot・テスト死角
 
+/** レイアウトモード (V3) */
+export type LayoutMode =
+    | 'force'      // Mandala (魔法陣): d3-force 物理演算
+    | 'tree'       // Yggdrasil (世界樹): 放射状ツリー
+    | 'balloon';   // Bubble (泡宇宙): パック円充填
+
 /** Git Hotspot 情報 */
 export interface GitHotspot {
     /** ファイルの相対パス */
@@ -254,6 +260,8 @@ export interface WorkerMsgInit {
         nodes: WorkerNode[];
         edges: WorkerEdge[];
         focusNodeId: string | null;
+        /** 初期レイアウトモード (V3) — 省略時は 'force' */
+        layoutMode?: LayoutMode;
     };
 }
 
@@ -262,6 +270,14 @@ export interface WorkerMsgFocus {
     type: 'FOCUS';
     payload: {
         focusNodeId: string;
+    };
+}
+
+/** Worker に送るレイアウトモード変更メッセージ (V3) */
+export interface WorkerMsgLayoutChange {
+    type: 'LAYOUT_CHANGE';
+    payload: {
+        mode: LayoutMode;
     };
 }
 
@@ -287,7 +303,7 @@ export interface WorkerMsgDone {
 }
 
 /** Worker に送る全メッセージの Union */
-export type MainToWorkerMessage = WorkerMsgInit | WorkerMsgFocus;
+export type MainToWorkerMessage = WorkerMsgInit | WorkerMsgFocus | WorkerMsgLayoutChange;
 
 /** Worker から返す全メッセージの Union */
 export type WorkerToMainMessage = WorkerMsgTick | WorkerMsgDone;

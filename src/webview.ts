@@ -71,12 +71,176 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+        /* ─── Search Overlay (V3 Phase 2) ──────────────── */
+        #search-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            display: flex;
+            justify-content: center;
+            padding-top: 12px;
+            z-index: 900;
+            pointer-events: none;
+            opacity: 0;
+            transform: translateY(-20px);
+            transition: opacity 0.25s ease, transform 0.25s ease;
+        }
+        #search-overlay.visible {
+            opacity: 1;
+            transform: translateY(0);
+            pointer-events: auto;
+        }
+        #search-input {
+            width: 360px;
+            padding: 8px 14px 8px 32px;
+            background: rgba(15, 18, 40, 0.92);
+            border: 1px solid rgba(100, 150, 255, 0.35);
+            border-radius: 8px;
+            color: #d0d8ff;
+            font-family: Consolas, 'Courier New', monospace;
+            font-size: 13px;
+            outline: none;
+            backdrop-filter: blur(10px);
+        }
+        #search-input:focus {
+            border-color: rgba(100, 200, 255, 0.7);
+            box-shadow: 0 0 12px rgba(0, 180, 255, 0.15);
+        }
+        #search-input::placeholder {
+            color: rgba(100, 140, 200, 0.5);
+        }
+        .search-icon {
+            position: absolute;
+            left: calc(50% - 168px);
+            top: 22px;
+            color: rgba(100, 150, 255, 0.5);
+            font-size: 14px;
+            pointer-events: none;
+        }
+        #search-count {
+            position: absolute;
+            right: calc(50% - 168px);
+            top: 22px;
+            color: rgba(100, 180, 255, 0.6);
+            font-family: Consolas, monospace;
+            font-size: 11px;
+        }
+        /* ─── Detail Panel (V3 Phase 3) ────────────────── */
+        #detail-panel {
+            position: fixed;
+            top: 0; right: 0; bottom: 0;
+            width: 340px;
+            background: rgba(10, 14, 32, 0.95);
+            border-left: 1px solid rgba(100, 150, 255, 0.2);
+            z-index: 800;
+            transform: translateX(100%);
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            overflow-y: auto;
+            backdrop-filter: blur(12px);
+            padding: 20px;
+            font-family: Consolas, 'Courier New', monospace;
+            color: #c0c8e0;
+        }
+        #detail-panel.visible {
+            transform: translateX(0);
+        }
+        #detail-panel .dp-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid rgba(100, 150, 255, 0.15);
+        }
+        #detail-panel .dp-title {
+            font-size: 15px;
+            color: #88ccff;
+            font-weight: normal;
+        }
+        #detail-panel .dp-close {
+            cursor: pointer;
+            color: rgba(200, 200, 255, 0.5);
+            font-size: 18px;
+            line-height: 1;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: background 0.15s;
+        }
+        #detail-panel .dp-close:hover {
+            background: rgba(255, 255, 255, 0.08);
+            color: #fff;
+        }
+        #detail-panel .dp-section {
+            margin-bottom: 14px;
+        }
+        #detail-panel .dp-label {
+            font-size: 10px;
+            color: rgba(120, 160, 220, 0.6);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 4px;
+        }
+        #detail-panel .dp-value {
+            font-size: 12px;
+            color: #d0d8ff;
+            line-height: 1.5;
+        }
+        #detail-panel .dp-value.path {
+            color: rgba(100, 180, 255, 0.8);
+            word-break: break-all;
+        }
+        #detail-panel .dp-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            margin: 2px 4px 2px 0;
+            background: rgba(100, 150, 255, 0.12);
+            border: 1px solid rgba(100, 150, 255, 0.2);
+        }
+        #detail-panel .dp-warning {
+            color: #ff8844;
+            font-size: 11px;
+            padding: 4px 0;
+            border-left: 2px solid rgba(255, 136, 68, 0.4);
+            padding-left: 8px;
+            margin: 4px 0;
+        }
+        #detail-panel .dp-dep-list {
+            list-style: none;
+            padding: 0;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        #detail-panel .dp-dep-list li {
+            padding: 3px 0;
+            font-size: 11px;
+            color: rgba(180, 200, 255, 0.7);
+            cursor: pointer;
+            transition: color 0.15s;
+        }
+        #detail-panel .dp-dep-list li:hover {
+            color: #88ccff;
+        }
     </style>
 </head>
 <body>
     <div id="loading-overlay">
         <div class="loading-circle"></div>
         <div class="loading-text">⟐ Summoning the Magic Circle...</div>
+    </div>
+    <!-- Search Overlay (V3 Phase 2) -->
+    <div id="search-overlay">
+        <span class="search-icon">🔍</span>
+        <input id="search-input" type="text" placeholder="Search files... (Ctrl+F)" autocomplete="off" spellcheck="false" />
+        <span id="search-count"></span>
+    </div>
+    <!-- Detail Panel (V3 Phase 3) -->
+    <div id="detail-panel">
+        <div class="dp-header">
+            <span class="dp-title" id="dp-title">—</span>
+            <span class="dp-close" id="dp-close">✕</span>
+        </div>
+        <div id="dp-content"></div>
     </div>
     <script nonce="${nonce}" data-worker-uri="${workerUri}" src="${scriptUri}"></script>
 </body>

@@ -15,6 +15,7 @@ import type {
     WorkerNode,
     WorkerEdge,
     RuneMode,
+    LayoutMode,
 } from '../shared/types.js';
 
 // ─── VS Code API ────────────────────────────────────────
@@ -57,6 +58,8 @@ interface AppState {
     runeMode: RuneMode;
     /** 現在の LOD レベル */
     currentLOD: LODLevel;
+    /** 現在のレイアウトモード (V3) */
+    layoutMode: LayoutMode;
     /** 探索履歴 (Breadcrumbs) */
     breadcrumbs: BreadcrumbEntry[];
 }
@@ -74,6 +77,7 @@ const state: AppState = {
     nodeOrder: [],
     runeMode: 'default',
     currentLOD: 'mid',
+    layoutMode: 'force',
     breadcrumbs: [],
 };
 
@@ -333,6 +337,7 @@ function onGraphReceived() {
             nodes: workerNodes,
             edges: workerEdges,
             focusNodeId: state.focusNodeId,
+            layoutMode: state.layoutMode,
         },
     });
 
@@ -499,6 +504,9 @@ async function init() {
         if (breadcrumbContainer) {
             breadcrumbContainer.position.set(170, window.innerHeight - 70);
         }
+        if (minimapContainer) {
+            updateMinimapPosition();
+        }
     });
 
     // LOD: ズーム変更で LOD レベルが切り替わったら再描画
@@ -507,6 +515,21 @@ async function init() {
         if (newLOD !== state.currentLOD) {
             state.currentLOD = newLOD;
             renderGraph();
+        }
+        // Minimap: ビューポート矩形を更新
+        if (minimapGfx) { refreshMinimap(); }
+    });
+
+    // Minimap: パン時にも更新
+    viewport.on('moved', () => {
+        if (minimapGfx) { refreshMinimap(); }
+    });
+
+    // 背景クリックで Detail Panel を閉じる
+    viewport.on('clicked', (e: any) => {
+        // ノード上のクリックでない場合のみ閉じる
+        if (!state.hoveredNodeId && selectedNodeId) {
+            closeDetailPanel();
         }
     });
 
@@ -520,8 +543,20 @@ async function init() {
     // Rune UI 初期化
     initRuneUI();
 
+    // Layout Mode UI 初期化 (V3)
+    initLayoutUI();
+
     // Breadcrumbs 初期化
     initBreadcrumbs();
+
+    // Search Overlay 初期化 (V3 Phase 2)
+    initSearchOverlay();
+
+    // Minimap 初期化 (V3 Phase 2)
+    initMinimap();
+
+    // Detail Panel 初期化 (V3 Phase 3)
+    initDetailPanel();
 
     // 解析リクエスト
     sendMessage({ type: 'REQUEST_ANALYSIS' });
@@ -835,11 +870,25 @@ function renderGraph() {
 
         const ring = state.nodeRings.get(node.id) || 'global';
         const nodeGfx = createNodeGraphics(node, pos, ring);
+
+        // Search Dimming: マッチしないノードを暗くする
+        if (dimmedNodes.size > 0 && dimmedNodes.has(node.id)) {
+            nodeGfx.alpha = 0.12;
+        }
+
+        // Detail Panel 選択強調
+        if (selectedNodeId && node.id !== selectedNodeId) {
+            nodeGfx.alpha = Math.min(nodeGfx.alpha, 0.35);
+        }
+
         nodeContainer.addChild(nodeGfx);
     }
 
     // Ghost Nodes: 探索履歴の軌跡を描画
     drawGhostTrail();
+
+    // Minimap 更新
+    if (minimapGfx) { refreshMinimap(); }
 }
 
 function createNodeGraphics(
@@ -1150,7 +1199,7 @@ function attachNodeInteraction(
         container.alpha = getRingAlpha(ring);
     });
 
-    // インタラクション: クリック = Summoning (フォーカス切り替え)
+    // インタラクション: クリック = Summoning + Detail Panel
     // 右クリック or Alt+クリック = ファイルへジャンプ
     container.on('pointertap', (e: FederatedPointerEvent) => {
         if (e.altKey || e.button === 2) {
@@ -1160,6 +1209,7 @@ function attachNodeInteraction(
             });
         } else {
             summonNode(node.id);
+            openDetailPanel(node.id);
         }
     });
 
@@ -1289,6 +1339,87 @@ function refreshRuneUI() {
 // ─── Breadcrumbs (探索履歴パネル) ────────────────────────
 let breadcrumbContainer: Container;
 
+// ─── Layout Mode UI (V3) ────────────────────────────────
+interface LayoutButton {
+    mode: LayoutMode;
+    label: string;
+    icon: string;
+    color: number;
+}
+
+const LAYOUT_BUTTONS: LayoutButton[] = [
+    { mode: 'force',   label: 'Mandala',   icon: '◎', color: 0x8866ff },
+    { mode: 'tree',    label: 'Yggdrasil', icon: '🌳', color: 0x44cc88 },
+    { mode: 'balloon', label: 'Bubble',    icon: '◉', color: 0x6699ff },
+];
+
+let layoutContainer: Container;
+
+function initLayoutUI() {
+    layoutContainer = new Container();
+    // Rune ボタンの下に配置 (5つ × 36px + 余白)
+    layoutContainer.position.set(16, 16 + RUNE_BUTTONS.length * 36 + 20);
+    uiContainer.addChild(layoutContainer);
+    refreshLayoutUI();
+}
+
+/** レイアウトモード切り替え */
+function switchLayoutMode(newMode: LayoutMode) {
+    if (state.layoutMode === newMode) { return; }
+    state.layoutMode = newMode;
+
+    // Worker にレイアウト変更メッセージ送信
+    sendToWorker({ type: 'LAYOUT_CHANGE', payload: { mode: newMode } });
+
+    state.isLoading = true;
+    startParticleLoading();
+    updateStatusText();
+    refreshLayoutUI();
+}
+
+/** Layout ボタンの表示を更新 */
+function refreshLayoutUI() {
+    layoutContainer.removeChildren();
+
+    // セパレータライン
+    const sep = new Graphics();
+    sep.moveTo(4, -10);
+    sep.lineTo(136, -10);
+    sep.stroke({ width: 1, color: 0x334466, alpha: 0.4 });
+    layoutContainer.addChild(sep);
+
+    LAYOUT_BUTTONS.forEach((btn, i) => {
+        const btnContainer = new Container();
+        btnContainer.position.set(0, i * 36);
+        btnContainer.eventMode = 'static';
+        btnContainer.cursor = 'pointer';
+
+        const isActive = state.layoutMode === btn.mode;
+        const bg = new Graphics();
+        bg.roundRect(0, 0, 140, 30, 6);
+        bg.fill({ color: isActive ? btn.color : 0x151830, alpha: isActive ? 0.35 : 0.6 });
+        bg.stroke({ width: 1, color: btn.color, alpha: isActive ? 0.9 : 0.3 });
+        btnContainer.addChild(bg);
+
+        const text = new Text({
+            text: `${btn.icon} ${btn.label}`,
+            style: new TextStyle({
+                fontSize: 11,
+                fill: isActive ? 0xffffff : btn.color,
+                fontFamily: 'Consolas, monospace',
+            }),
+        });
+        text.position.set(8, 7);
+        btnContainer.addChild(text);
+
+        btnContainer.on('pointertap', () => {
+            switchLayoutMode(btn.mode);
+        });
+
+        layoutContainer.addChild(btnContainer);
+    });
+}
+
 function initBreadcrumbs() {
     breadcrumbContainer = new Container();
     breadcrumbContainer.position.set(170, window.innerHeight - 70);
@@ -1357,6 +1488,342 @@ function refreshBreadcrumbs() {
     breadcrumbContainer.position.set(170, window.innerHeight - 70);
 }
 
+// ─── Search Overlay (V3 Phase 2) ────────────────────────
+let searchOverlay: HTMLElement | null = null;
+let searchInput: HTMLInputElement | null = null;
+let searchCountEl: HTMLElement | null = null;
+let searchResults: string[] = [];
+let searchCurrentIdx = -1;
+/** ディミング中のノードID集合 (マッチしないもの) */
+let dimmedNodes: Set<string> = new Set();
+
+function initSearchOverlay() {
+    searchOverlay = document.getElementById('search-overlay');
+    searchInput = document.getElementById('search-input') as HTMLInputElement;
+    searchCountEl = document.getElementById('search-count');
+
+    if (!searchInput || !searchOverlay) { return; }
+
+    // Ctrl+F でトグル
+    window.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+            e.preventDefault();
+            toggleSearch();
+        }
+        if (e.key === 'Escape' && searchOverlay?.classList.contains('visible')) {
+            closeSearch();
+        }
+    });
+
+    // インクリメンタルサーチ
+    searchInput.addEventListener('input', () => {
+        performSearch(searchInput!.value);
+    });
+
+    // Enter で次の結果へ FlyTo
+    searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            if (searchResults.length > 0) {
+                searchCurrentIdx = (searchCurrentIdx + 1) % searchResults.length;
+                flyToSearchResult(searchResults[searchCurrentIdx]);
+                updateSearchCount();
+            }
+        }
+    });
+}
+
+function toggleSearch() {
+    if (!searchOverlay) { return; }
+    if (searchOverlay.classList.contains('visible')) {
+        closeSearch();
+    } else {
+        searchOverlay.classList.add('visible');
+        searchInput?.focus();
+    }
+}
+
+function closeSearch() {
+    if (!searchOverlay) { return; }
+    searchOverlay.classList.remove('visible');
+    if (searchInput) { searchInput.value = ''; }
+    searchResults = [];
+    searchCurrentIdx = -1;
+    dimmedNodes.clear();
+    if (searchCountEl) { searchCountEl.textContent = ''; }
+    renderGraph(); // ディミング解除
+}
+
+function performSearch(query: string) {
+    const graph = state.graph;
+    if (!graph || !query.trim()) {
+        searchResults = [];
+        searchCurrentIdx = -1;
+        dimmedNodes.clear();
+        if (searchCountEl) { searchCountEl.textContent = ''; }
+        renderGraph();
+        return;
+    }
+
+    const q = query.toLowerCase();
+    searchResults = [];
+    dimmedNodes = new Set(graph.nodes.map(n => n.id));
+
+    for (const node of graph.nodes) {
+        const matchLabel = node.label.toLowerCase().includes(q);
+        const matchPath = node.relativePath.toLowerCase().includes(q);
+        if (matchLabel || matchPath) {
+            searchResults.push(node.id);
+            dimmedNodes.delete(node.id);
+        }
+    }
+
+    searchCurrentIdx = searchResults.length > 0 ? 0 : -1;
+    updateSearchCount();
+    renderGraph(); // ディミング適用
+}
+
+function updateSearchCount() {
+    if (!searchCountEl) { return; }
+    if (searchResults.length === 0) {
+        searchCountEl.textContent = searchInput?.value ? '0 matches' : '';
+    } else {
+        searchCountEl.textContent = `${searchCurrentIdx + 1}/${searchResults.length}`;
+    }
+}
+
+function flyToSearchResult(nodeId: string) {
+    const pos = state.nodePositions.get(nodeId);
+    if (pos) {
+        animateViewportTo(pos.x, pos.y);
+    }
+}
+
+// ─── Minimap (V3 Phase 2) ───────────────────────────────
+let minimapContainer: Container;
+let minimapGfx: Graphics;
+const MINIMAP_SCALE = 0.1;
+const MINIMAP_SIZE = 160;
+
+function initMinimap() {
+    minimapContainer = new Container();
+    minimapGfx = new Graphics();
+    minimapContainer.addChild(minimapGfx);
+    uiContainer.addChild(minimapContainer);
+
+    // 位置: 右下
+    updateMinimapPosition();
+
+    // クリックでナビゲーション
+    minimapContainer.eventMode = 'static';
+    minimapContainer.cursor = 'pointer';
+    minimapContainer.on('pointertap', (e: FederatedPointerEvent) => {
+        const local = minimapContainer.toLocal(e.global);
+        // ミニマップ座標 → ワールド座標
+        const worldX = (local.x - MINIMAP_SIZE / 2) / MINIMAP_SCALE;
+        const worldY = (local.y - MINIMAP_SIZE / 2) / MINIMAP_SCALE;
+        animateViewportTo(worldX, worldY);
+    });
+}
+
+function updateMinimapPosition() {
+    minimapContainer.position.set(
+        window.innerWidth - MINIMAP_SIZE - 16,
+        window.innerHeight - MINIMAP_SIZE - 16,
+    );
+}
+
+function refreshMinimap() {
+    minimapGfx.clear();
+
+    // 背景
+    minimapGfx.roundRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE, 6);
+    minimapGfx.fill({ color: 0x0a0c1e, alpha: 0.8 });
+    minimapGfx.stroke({ width: 1, color: 0x334466, alpha: 0.4 });
+
+    if (!state.graph) { return; }
+
+    // ノードをドットで描画
+    for (const node of state.graph.nodes) {
+        const pos = state.nodePositions.get(node.id);
+        if (!pos) { continue; }
+
+        const mx = pos.x * MINIMAP_SCALE + MINIMAP_SIZE / 2;
+        const my = pos.y * MINIMAP_SCALE + MINIMAP_SIZE / 2;
+
+        // 範囲外は描画しない
+        if (mx < 0 || mx > MINIMAP_SIZE || my < 0 || my > MINIMAP_SIZE) { continue; }
+
+        const isFocus = node.id === state.focusNodeId;
+        const color = isFocus ? 0x66ddff : getNodeColor(node);
+        const radius = isFocus ? 3 : 1.5;
+
+        minimapGfx.circle(mx, my, radius);
+        minimapGfx.fill({ color, alpha: isFocus ? 1.0 : 0.6 });
+    }
+
+    // ビューポート範囲を矩形で表示
+    const vp = viewport;
+    const vpLeft = (vp.left * MINIMAP_SCALE) + MINIMAP_SIZE / 2;
+    const vpTop = (vp.top * MINIMAP_SCALE) + MINIMAP_SIZE / 2;
+    const vpWidth = (vp.screenWidth / vp.scaled) * MINIMAP_SCALE;
+    const vpHeight = (vp.screenHeight / vp.scaled) * MINIMAP_SCALE;
+
+    minimapGfx.rect(vpLeft, vpTop, vpWidth, vpHeight);
+    minimapGfx.stroke({ width: 1, color: 0x6699ff, alpha: 0.5 });
+}
+
+// ─── Detail Panel (V3 Phase 3) ──────────────────────────
+let detailPanel: HTMLElement | null = null;
+let detailTitle: HTMLElement | null = null;
+let detailContent: HTMLElement | null = null;
+let selectedNodeId: string | null = null;
+
+function initDetailPanel() {
+    detailPanel = document.getElementById('detail-panel');
+    detailTitle = document.getElementById('dp-title');
+    detailContent = document.getElementById('dp-content');
+    const closeBtn = document.getElementById('dp-close');
+
+    if (closeBtn) {
+        closeBtn.addEventListener('click', closeDetailPanel);
+    }
+}
+
+function openDetailPanel(nodeId: string) {
+    const graph = state.graph;
+    if (!graph || !detailPanel || !detailTitle || !detailContent) { return; }
+
+    const node = graph.nodes.find(n => n.id === nodeId);
+    if (!node) { return; }
+
+    selectedNodeId = nodeId;
+
+    // タイトル
+    detailTitle.textContent = node.label;
+
+    // コンテンツ構築
+    let html = '';
+
+    // パス
+    html += `<div class="dp-section">
+        <div class="dp-label">Path</div>
+        <div class="dp-value path">${escapeHtml(node.relativePath)}</div>
+    </div>`;
+
+    // 基本情報
+    html += `<div class="dp-section">
+        <div class="dp-label">Info</div>
+        <div class="dp-value">
+            <span class="dp-badge">${node.kind}</span>
+            <span class="dp-badge">${node.lineCount} lines</span>
+            <span class="dp-badge">${node.exports.length} exports</span>
+        </div>
+    </div>`;
+
+    // Git 情報
+    if (node.gitCommitCount !== undefined) {
+        html += `<div class="dp-section">
+            <div class="dp-label">Git</div>
+            <div class="dp-value">
+                <span class="dp-badge">${node.gitCommitCount} commits</span>
+                ${node.gitLastModified ? `<span class="dp-badge">${node.gitLastModified.substring(0, 10)}</span>` : ''}
+            </div>
+        </div>`;
+    }
+
+    // Exports
+    if (node.exports.length > 0) {
+        html += `<div class="dp-section">
+            <div class="dp-label">Exports</div>
+            <div class="dp-value">${node.exports.map(e =>
+                `<span class="dp-badge">${e.isDefault ? '★ ' : ''}${escapeHtml(e.name)} <small>(${e.kind})</small></span>`
+            ).join('')}</div>
+        </div>`;
+    }
+
+    // 依存先 (Imports)
+    const outEdges = graph.edges.filter(e => e.source === nodeId);
+    if (outEdges.length > 0) {
+        html += `<div class="dp-section">
+            <div class="dp-label">Imports (${outEdges.length})</div>
+            <ul class="dp-dep-list">${outEdges.map(e => {
+                const targetNode = graph.nodes.find(n => n.id === e.target);
+                const label = targetNode?.label || e.target.split('/').pop() || e.target;
+                return `<li data-node-id="${escapeHtml(e.target)}">${escapeHtml(label)} <small style="color:rgba(100,140,200,0.5)">(${e.kind})</small></li>`;
+            }).join('')}</ul>
+        </div>`;
+    }
+
+    // 被依存 (Imported by)
+    const inEdges = graph.edges.filter(e => e.target === nodeId);
+    if (inEdges.length > 0) {
+        html += `<div class="dp-section">
+            <div class="dp-label">Imported by (${inEdges.length})</div>
+            <ul class="dp-dep-list">${inEdges.map(e => {
+                const srcNode = graph.nodes.find(n => n.id === e.source);
+                const label = srcNode?.label || e.source.split('/').pop() || e.source;
+                return `<li data-node-id="${escapeHtml(e.source)}">${escapeHtml(label)}</li>`;
+            }).join('')}</ul>
+        </div>`;
+    }
+
+    // セキュリティ警告
+    if (node.securityWarnings && node.securityWarnings.length > 0) {
+        html += `<div class="dp-section">
+            <div class="dp-label">⚠ Security Warnings</div>
+            ${node.securityWarnings.map(w =>
+                `<div class="dp-warning">L${w.line}: ${escapeHtml(w.message)}</div>`
+            ).join('')}
+        </div>`;
+    }
+
+    // Optimization
+    if (node.isBarrel || (node.treeShakingRisk !== undefined && node.treeShakingRisk > 0)) {
+        html += `<div class="dp-section">
+            <div class="dp-label">⚡ Optimization</div>
+            <div class="dp-value">
+                ${node.isBarrel ? '<span class="dp-badge" style="color:#ff8800">Barrel file</span>' : ''}
+                ${node.treeShakingRisk !== undefined ? `<span class="dp-badge">Tree-shaking risk: ${node.treeShakingRisk}</span>` : ''}
+                ${node.hasSideEffects ? '<span class="dp-badge" style="color:#ff4400">Side effects</span>' : ''}
+            </div>
+        </div>`;
+    }
+
+    detailContent.innerHTML = html;
+    detailPanel.classList.add('visible');
+
+    // 依存リスト内のクリックでSummon
+    const depLinks = detailContent.querySelectorAll('[data-node-id]');
+    depLinks.forEach(el => {
+        el.addEventListener('click', () => {
+            const targetId = (el as HTMLElement).dataset.nodeId;
+            if (targetId) {
+                summonNode(targetId);
+                openDetailPanel(targetId);
+            }
+        });
+    });
+
+    renderGraph(); // 選択強調
+}
+
+function closeDetailPanel() {
+    if (detailPanel) {
+        detailPanel.classList.remove('visible');
+    }
+    selectedNodeId = null;
+    renderGraph(); // 選択解除
+}
+
+function escapeHtml(str: string): string {
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
 // ─── UI ──────────────────────────────────────────────────
 function updateStatusText() {
     if (state.isLoading) {
@@ -1367,11 +1834,12 @@ function updateStatusText() {
             ? state.graph?.nodes.find(n => n.id === state.focusNodeId)?.label || ''
             : '';
         const runeLabel = state.runeMode !== 'default' ? ` | Rune: ${state.runeMode}` : '';
+        const layoutLabel = state.layoutMode !== 'force' ? ` | Layout: ${state.layoutMode}` : '';
         const cycleCount = g.circularDeps?.length || 0;
         const cycleInfo = state.runeMode === 'architecture' && cycleCount > 0
             ? ` | ⟳ ${cycleCount} cycles` : '';
         const lodLabel = state.currentLOD !== 'mid' ? ` | LOD: ${state.currentLOD}` : '';
-        statusText.text = `⟐ ${state.projectName} — ${g.nodes.length} files, ${g.edges.length} deps (${g.analysisTimeMs}ms) | Focus: ${focusLabel}${runeLabel}${cycleInfo}${lodLabel}`;
+        statusText.text = `⟐ ${state.projectName} — ${g.nodes.length} files, ${g.edges.length} deps (${g.analysisTimeMs}ms) | Focus: ${focusLabel}${runeLabel}${layoutLabel}${cycleInfo}${lodLabel}`;
     }
 }
 
