@@ -266,6 +266,122 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             min-height: 2px;
             transition: height 0.3s ease;
         }
+        /* ─── Detail Panel Action Buttons (V6) ─────────── */
+        .dp-actions {
+            display: flex;
+            gap: 4px;
+            margin-right: 8px;
+        }
+        .dp-action-btn {
+            background: rgba(100, 150, 255, 0.08);
+            border: 1px solid rgba(100, 150, 255, 0.2);
+            border-radius: 5px;
+            color: #88bbff;
+            font-size: 13px;
+            padding: 3px 8px;
+            cursor: pointer;
+            transition: background 0.15s, border-color 0.15s;
+            line-height: 1;
+        }
+        .dp-action-btn:hover {
+            background: rgba(100, 150, 255, 0.2);
+            border-color: rgba(100, 180, 255, 0.5);
+            color: #fff;
+        }
+        /* ─── Help Overlay (V6 Phase 4) ────────────────── */
+        #help-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 950;
+            background: rgba(4, 6, 18, 0.85);
+            backdrop-filter: blur(12px);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.25s ease;
+        }
+        #help-overlay.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .help-card {
+            background: rgba(10, 14, 32, 0.95);
+            border: 1px solid rgba(100, 150, 255, 0.2);
+            border-radius: 12px;
+            padding: 28px 34px;
+            max-width: 640px;
+            width: 92%;
+            max-height: 80vh;
+            overflow-y: auto;
+            color: #c8d0e8;
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+        .help-card h2 {
+            font-size: 16px;
+            color: #88ccff;
+            margin-bottom: 16px;
+            font-weight: 600;
+        }
+        .help-card h3 {
+            font-size: 12px;
+            color: rgba(130, 170, 230, 0.7);
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            margin: 14px 0 6px;
+            font-weight: 600;
+        }
+        .help-card table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        .help-card td {
+            padding: 3px 8px;
+            vertical-align: top;
+        }
+        .help-card td:first-child {
+            color: #88bbff;
+            font-family: Consolas, 'Courier New', monospace;
+            white-space: nowrap;
+            width: 120px;
+        }
+        .help-card td:last-child {
+            color: rgba(200, 210, 240, 0.8);
+        }
+        .help-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 6px;
+        }
+        .help-legend-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 11px;
+        }
+        .help-legend-swatch {
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+        }
+        .help-close {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            cursor: pointer;
+            color: rgba(200, 200, 255, 0.5);
+            font-size: 20px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: background 0.15s;
+        }
+        .help-close:hover {
+            background: rgba(255, 255, 255, 0.08);
+            color: #fff;
+        }
         /* ─── Code Peek (V3.5 + V5 Dual Typography) ───── */
         #detail-panel .dp-code-peek {
             background: rgba(4, 6, 16, 0.95);
@@ -333,6 +449,11 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             <span class="dp-close" id="dp-close">✕</span>
         </div>
         <div id="dp-content"></div>
+    </div>
+    <!-- Help Overlay (V6 Phase 4) -->
+    <div id="help-overlay">
+        <span class="help-close" id="help-close">✕</span>
+        <div class="help-card" id="help-card"></div>
     </div>
     <script nonce="${nonce}" data-worker-uri="${workerUri}" src="${scriptUri}"></script>
 </body>

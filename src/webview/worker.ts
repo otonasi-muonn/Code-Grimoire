@@ -28,8 +28,8 @@ import type {
 // ─── 定数 ────────────────────────────────────────────────
 const RING_RADII = {
     focus: 0,         // 中心
-    context: 250,     // 中間リング
-    global: 550,      // 外周リング
+    context: 350,     // 中間リング
+    global: 750,      // 外周リング
 };
 
 /** Warm-up で事前計算するステップ数 */
@@ -116,16 +116,16 @@ function initForceSimulation(focusNodeId: string | null): void {
         .alphaMin(ALPHA_MIN)
         .force('link', forceLink<WorkerNode, SimulationLinkDatum<WorkerNode>>(links)
             .id(d => d.id)
-            .distance(100)
-            .strength(0.3)
+            .distance(140)
+            .strength(0.25)
         )
         .force('charge', forceManyBody<WorkerNode>()
-            .strength(-150)
-            .distanceMax(600)
+            .strength(-220)
+            .distanceMax(800)
         )
         .force('collide', forceCollide<WorkerNode>()
-            .radius(d => Math.max(15, Math.sqrt(d.lineCount) * 2 + 10))
-            .strength(0.7)
+            .radius(d => Math.max(22, Math.sqrt(d.lineCount) * 2.5 + 14))
+            .strength(0.8)
         )
         .force('ring', ringForce(0.6))
         .stop();
@@ -240,28 +240,31 @@ function collapseTree(node: DirTreeNode): DirTreeNode {
     return node;
 }
 
-/** Tree レイアウト: 放射状ツリー (Yggdrasil) */
+/** Tree レイアウト: トップダウン縦型ツリー (Yggdrasil) */
 function calculateTreeLayout(dirTree: DirTreeNode): Map<string, { x: number; y: number }> {
     const root = hierarchy(dirTree)
         .sum(d => d.value || 0)
         .sort((a, b) => (b.value || 0) - (a.value || 0));
 
+    // nodeSize: [横方向のノード間距離, 縦方向(深さ)のレベル間距離]
+    // ノード数に応じてスケーリング（密集を防ぐ）
+    const hSpacing = Math.max(60, 120 - nodes.length * 0.5);
+    const vSpacing = Math.max(100, 180 - nodes.length * 0.8);
+
     const treeLayout = d3Tree<DirTreeNode>()
-        .size([2 * Math.PI, Math.min(nodes.length * 8, 800)])
-        .separation((a, b) => (a.parent === b.parent ? 1 : 2) / (a.depth || 1));
+        .nodeSize([hSpacing, vSpacing])
+        .separation((a, b) => (a.parent === b.parent ? 1 : 2));
 
     treeLayout(root);
 
     const result = new Map<string, { x: number; y: number }>();
 
+    // nodeSize モードでは原点がルートになるのでそのまま使える
     root.each((d: HierarchyNode<DirTreeNode>) => {
         if (d.data.nodeId) {
-            // 放射状変換: (angle, radius) → (x, y)
-            const angle = (d as any).x as number;
-            const radius = (d as any).y as number;
             result.set(d.data.nodeId, {
-                x: radius * Math.cos(angle - Math.PI / 2),
-                y: radius * Math.sin(angle - Math.PI / 2),
+                x: (d as any).x as number,
+                y: (d as any).y as number,
             });
         }
     });
@@ -276,8 +279,8 @@ function calculateBalloonLayout(dirTree: DirTreeNode): Map<string, { x: number; 
         .sort((a, b) => (b.value || 0) - (a.value || 0));
 
     const packLayout = d3Pack<DirTreeNode>()
-        .size([1200, 1200])
-        .padding(3);
+        .size([1600, 1600])
+        .padding(8);
 
     packLayout(root);
 
@@ -287,8 +290,8 @@ function calculateBalloonLayout(dirTree: DirTreeNode): Map<string, { x: number; 
         if (d.data.nodeId) {
             // 中央原点に平行移動 (pack は [0, size] を使う)
             result.set(d.data.nodeId, {
-                x: (d as any).x - 600,
-                y: (d as any).y - 600,
+                x: (d as any).x - 800,
+                y: (d as any).y - 800,
             });
         }
     });
