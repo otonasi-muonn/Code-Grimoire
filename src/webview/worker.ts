@@ -23,6 +23,7 @@ import type {
     WorkerEdge,
     LayoutMode,
     HierarchyEdge,
+    BubbleGroup,
 } from '../shared/types.js';
 
 // ─── 定数 ────────────────────────────────────────────────
@@ -53,6 +54,8 @@ let currentLayoutMode: LayoutMode = 'force';
 let currentFocusNodeId: string | null = null;
 /** 最後に計算された階層エッジ (Tree/Balloon レイアウト時のみ) */
 let lastHierarchyEdges: HierarchyEdge[] = [];
+/** 最後に計算された Bubble グループ円 (Balloon レイアウト時のみ) */
+let lastBubbleGroups: BubbleGroup[] = [];
 
 // ─── メッセージ受信 ──────────────────────────────────────
 self.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
@@ -168,6 +171,7 @@ function switchLayout(newMode: LayoutMode): void {
     if (newMode === 'force') {
         // Force に戻す場合: 現在の座標を初期値として再構築
         lastHierarchyEdges = [];
+        lastBubbleGroups = [];
         initForceSimulation(currentFocusNodeId);
     } else {
         // tree / balloon: 静的レイアウトへモーフィング
@@ -272,36 +276,51 @@ function calculateTreeLayout(dirTree: DirTreeNode): Map<string, { x: number; y: 
     return result;
 }
 
-/** Balloon レイアウト: パック円充填 (Bubble) */
+/** Balloon レイアウト: パック円充填 (Bubble) — ディレクトリグループ円付き */
 function calculateBalloonLayout(dirTree: DirTreeNode): Map<string, { x: number; y: number }> {
     const root = hierarchy(dirTree)
         .sum(d => d.value || 10)
         .sort((a, b) => (b.value || 0) - (a.value || 0));
 
     const packLayout = d3Pack<DirTreeNode>()
-        .size([1600, 1600])
-        .padding(8);
+        .size([2000, 2000])
+        .padding(20);
 
     packLayout(root);
 
     const result = new Map<string, { x: number; y: number }>();
+    const groups: BubbleGroup[] = [];
 
     root.each((d: HierarchyNode<DirTreeNode>) => {
+        const dx = (d as any).x - 1000;
+        const dy = (d as any).y - 1000;
+        const dr = (d as any).r as number;
+
         if (d.data.nodeId) {
-            // 中央原点に平行移動 (pack は [0, size] を使う)
-            result.set(d.data.nodeId, {
-                x: (d as any).x - 800,
-                y: (d as any).y - 800,
+            // 葉ノード (ファイル) — 座標を格納
+            result.set(d.data.nodeId, { x: dx, y: dy });
+        } else if (d.depth > 0 && d.children && d.children.length > 0) {
+            // 中間ノード (ディレクトリ) — グループ円として収集
+            groups.push({
+                label: d.data.name,
+                x: dx,
+                y: dy,
+                r: dr,
+                depth: d.depth,
             });
         }
     });
 
+    lastBubbleGroups = groups;
     return result;
 }
 
 /** レイアウトモードに応じた静的座標を計算し、階層エッジも抽出する */
 function calculateStaticLayout(mode: LayoutMode): Map<string, { x: number; y: number }> {
     const dirTree = collapseTree(buildDirectoryTree());
+
+    // Bubble グループは balloon 時のみ (calculateBalloonLayout 内で設定)
+    lastBubbleGroups = [];
 
     // 座標計算
     const positions = mode === 'tree'
@@ -526,6 +545,8 @@ function sendDone(): void {
             rings,
             // Smart Edges: Tree/Balloon レイアウト時のみ階層エッジを含める
             hierarchyEdges: currentLayoutMode !== 'force' ? lastHierarchyEdges : undefined,
+            // Bubble グループ円: Balloon レイアウト時のみ
+            bubbleGroups: currentLayoutMode === 'balloon' ? lastBubbleGroups : undefined,
         },
     };
 

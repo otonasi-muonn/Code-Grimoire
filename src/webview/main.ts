@@ -17,6 +17,7 @@ import type {
     RuneMode,
     LayoutMode,
     HierarchyEdge,
+    BubbleGroup,
 } from '../shared/types.js';
 
 // ─── VS Code API ────────────────────────────────────────
@@ -158,6 +159,8 @@ interface AppState {
     layoutMode: LayoutMode;
     /** 階層エッジ (Tree/Balloon 時のみ、V3.5) */
     hierarchyEdges: HierarchyEdge[];
+    /** Bubble レイアウト時のディレクトリグループ円 (V6) */
+    bubbleGroups: BubbleGroup[];
     /** 探索履歴 (Breadcrumbs) */
     breadcrumbs: BreadcrumbEntry[];
     /** ノードごとの接続数キャッシュ (Smart Labeling 用) */
@@ -183,6 +186,7 @@ const state: AppState = {
     currentLOD: 'mid',
     layoutMode: 'force',
     hierarchyEdges: [],
+    bubbleGroups: [],
     breadcrumbs: [],
     nodeDegree: new Map(),
     nodeContainerMap: new Map(),
@@ -329,6 +333,7 @@ function initWorker() {
                         applyPositions(msg.payload.positions);
                         applyRings(msg.payload.rings);
                         state.hierarchyEdges = msg.payload.hierarchyEdges || [];
+                        state.bubbleGroups = msg.payload.bubbleGroups || [];
                         renderGraph();
                         state.isLoading = false;
                         stopParticleLoading();
@@ -985,6 +990,42 @@ function drawRingGuides() {
     ringContainer.addChild(gfx);
 }
 
+/** Bubble レイアウト時のディレクトリグループ円を描画 */
+function drawBubbleGroups() {
+    const groupGfx = new Graphics();
+
+    // 深い順にソート (背面から描画するため depth が大きい=最も内側 を先に描画しない)
+    // → depth が小さいもの (外側のディレクトリ) を先に描画
+    const sorted = [...state.bubbleGroups].sort((a, b) => a.depth - b.depth);
+
+    for (const group of sorted) {
+        const alpha = Math.max(0.04, 0.12 - group.depth * 0.02);
+        const strokeAlpha = Math.max(0.08, 0.25 - group.depth * 0.04);
+
+        // 塗りつぶし
+        groupGfx.circle(group.x, group.y, group.r);
+        groupGfx.fill({ color: 0x1a2855, alpha });
+        groupGfx.stroke({ width: 1, color: 0xdde4f0, alpha: strokeAlpha });
+    }
+
+    // ラベル描画 (LOD Mid のみ)
+    if (state.currentLOD === 'mid') {
+        for (const group of sorted) {
+            if (group.r < 30) { continue; } // 小さすぎるグループはスキップ
+            const label = createSmartText(group.label, {
+                fontSize: Math.min(12, Math.max(8, group.r * 0.12)),
+                fill: 0x5580aa,
+            });
+            label.anchor.set(0.5, 0);
+            label.position.set(group.x, group.y - group.r + 4);
+            label.alpha = Math.max(0.3, 0.7 - group.depth * 0.1);
+            ringContainer.addChild(label);
+        }
+    }
+
+    ringContainer.addChild(groupGfx);
+}
+
 // ─── Ghost Nodes (探索軌跡) ──────────────────────────────
 function drawGhostTrail() {
     if (state.breadcrumbs.length < 2) { return; }
@@ -1066,6 +1107,11 @@ function renderGraph() {
 
     // 同心円ガイド
     drawRingGuides();
+
+    // Bubble グループ円 (ディレクトリ境界)
+    if (state.layoutMode === 'balloon' && state.bubbleGroups.length > 0) {
+        drawBubbleGroups();
+    }
 
     // エッジ描画 (Smart Edges: レイアウトモード適応)
     const edgeGfx = new Graphics();

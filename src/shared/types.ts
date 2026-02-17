@@ -329,6 +329,8 @@ export interface WorkerMsgDone {
         rings: Record<string, 'focus' | 'context' | 'global'>;
         /** 階層エッジ (Tree/Balloon レイアウト時のみ。ディレクトリ親子関係) */
         hierarchyEdges?: HierarchyEdge[];
+        /** Bubble レイアウト時のディレクトリグループ円 */
+        bubbleGroups?: BubbleGroup[];
     };
 }
 
@@ -338,6 +340,20 @@ export interface HierarchyEdge {
     parent: string;
     /** 子ノード (ファイル) の ID */
     child: string;
+}
+
+/** Bubble レイアウトのディレクトリグループ円 (V6) */
+export interface BubbleGroup {
+    /** ディレクトリ名 (表示ラベル) */
+    label: string;
+    /** 中心X座標 */
+    x: number;
+    /** 中心Y座標 */
+    y: number;
+    /** 半径 */
+    r: number;
+    /** 階層の深さ (0=ルート) */
+    depth: number;
 }
 
 /** Worker に送る全メッセージの Union */
