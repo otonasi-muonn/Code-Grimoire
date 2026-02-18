@@ -109,7 +109,7 @@ export function openDetailPanel(nodeId: string) {
         </div>`;
     }
 
-    const outEdges = graph.edges.filter(e => e.source === nodeId);
+    const outEdges = state.edgesBySource.get(nodeId) || [];
     if (outEdges.length > 0) {
         html += `<div class="dp-section">
             <div class="dp-label">${t('dp.imports')} (${outEdges.length})</div>
@@ -121,7 +121,7 @@ export function openDetailPanel(nodeId: string) {
         </div>`;
     }
 
-    const inEdges = graph.edges.filter(e => e.target === nodeId);
+    const inEdges = state.edgesByTarget.get(nodeId) || [];
     if (inEdges.length > 0) {
         html += `<div class="dp-section">
             <div class="dp-label">${t('dp.importedBy')} (${inEdges.length})</div>

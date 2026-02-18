@@ -13,7 +13,6 @@ import type {
     NodeKind,
     EdgeKind,
     SecurityWarning,
-    FunctionDep,
     CircularDependency,
     GitHotspot,
 } from './shared/types.js';
@@ -216,9 +215,6 @@ function buildGraph(program: ts.Program, workspaceRoot: string, startTime: numbe
         // Phase 3: セキュリティ警告検出
         node.securityWarnings = collectSecurityWarnings(sourceFile);
 
-        // Phase 3: 関数レベル依存 (CallExpression 追跡)
-        node.functionDeps = collectFunctionDeps(sourceFile, program, filePath, normalizeFilePath);
-
         nodes.set(filePath, node);
     }
 
@@ -417,12 +413,22 @@ const DANGEROUS_FUNCTIONS: Record<string, SecurityWarning['kind']> = {
     'document.writeln': 'dangerous-function',
 };
 
-/** Taint ソースとなる API 名 */
-const TAINT_SOURCES = new Set([
-    'req.body', 'req.query', 'req.params', 'req.headers',
-    'location.search', 'location.hash', 'location.href',
-    'document.cookie', 'localStorage', 'sessionStorage',
-    'window.name', 'postMessage',
+/** Taint ソースとなる API — PropertyAccess チェーンで検出 */
+const TAINT_PROPERTY_CHAINS: Array<{ chain: string[]; label: string }> = [
+    { chain: ['req', 'body'],     label: 'req.body' },
+    { chain: ['req', 'query'],    label: 'req.query' },
+    { chain: ['req', 'params'],   label: 'req.params' },
+    { chain: ['req', 'headers'],  label: 'req.headers' },
+    { chain: ['location', 'search'], label: 'location.search' },
+    { chain: ['location', 'hash'],   label: 'location.hash' },
+    { chain: ['location', 'href'],   label: 'location.href' },
+    { chain: ['document', 'cookie'], label: 'document.cookie' },
+    { chain: ['window', 'name'],     label: 'window.name' },
+];
+
+/** Taint ソースとなる単独 Identifier */
+const TAINT_IDENTIFIERS = new Set([
+    'localStorage', 'sessionStorage', 'postMessage',
     'URLSearchParams', 'FormData',
 ]);
 
@@ -439,27 +445,14 @@ function collectSecurityWarnings(sourceFile: ts.SourceFile): SecurityWarning[] {
                     warnings.push({ kind, line, message: `Dangerous: ${pattern}()`, symbol: pattern });
                 }
             }
-
-            // Taint source 検出
-            for (const taint of TAINT_SOURCES) {
-                if (callText.includes(taint) || node.getText(sourceFile).includes(taint)) {
-                    const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
-                    warnings.push({
-                        kind: 'taint-source',
-                        line,
-                        message: `Taint source: ${taint}`,
-                        symbol: taint,
-                    });
-                    break; // 1つの CallExpression に対して1つのみ
-                }
-            }
         }
 
-        // PropertyAccessExpression: .innerHTML = ..., .dangerouslySetInnerHTML
+        // AST ベースの Taint Source 検出: PropertyAccessExpression チェーン (e.g. req.body)
         if (ts.isPropertyAccessExpression(node)) {
             const propName = node.name.text;
+
+            // innerHTML / outerHTML 代入チェック
             if (propName === 'innerHTML' || propName === 'outerHTML') {
-                // 代入のコンテキストにあるかチェック
                 if (node.parent && ts.isBinaryExpression(node.parent) &&
                     node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
                     const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
@@ -470,6 +463,39 @@ function collectSecurityWarnings(sourceFile: ts.SourceFile): SecurityWarning[] {
                         symbol: propName,
                     });
                 }
+            }
+
+            // Taint チェーン検出: obj.prop パターン (e.g. req.body, location.search)
+            if (ts.isIdentifier(node.expression)) {
+                const objName = node.expression.text;
+                for (const tc of TAINT_PROPERTY_CHAINS) {
+                    if (tc.chain.length === 2 && tc.chain[0] === objName && tc.chain[1] === propName) {
+                        const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+                        warnings.push({
+                            kind: 'taint-source',
+                            line,
+                            message: `Taint source: ${tc.label}`,
+                            symbol: tc.label,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Taint Identifier 検出: localStorage, sessionStorage, postMessage 等
+        if (ts.isIdentifier(node) && TAINT_IDENTIFIERS.has(node.text)) {
+            // 宣言自体は除外 (import, const 等)
+            if (!ts.isImportSpecifier(node.parent) &&
+                !ts.isVariableDeclaration(node.parent) &&
+                !ts.isParameter(node.parent) &&
+                !ts.isPropertyDeclaration(node.parent)) {
+                const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+                warnings.push({
+                    kind: 'taint-source',
+                    line,
+                    message: `Taint source: ${node.text}`,
+                    symbol: node.text,
+                });
             }
         }
 
@@ -489,87 +515,6 @@ function collectSecurityWarnings(sourceFile: ts.SourceFile): SecurityWarning[] {
 
     ts.forEachChild(sourceFile, visit);
     return warnings;
-}
-
-// ─── Phase 3: 関数レベル依存 (CallExpression 追跡) ─────
-
-function collectFunctionDeps(
-    sourceFile: ts.SourceFile,
-    program: ts.Program,
-    sourceId: string,
-    normalize: (p: string) => string,
-): FunctionDep[] {
-    const deps: FunctionDep[] = [];
-    const checker = program.getTypeChecker();
-
-    /** 最も近い外側の関数/メソッド名を取得 */
-    function getEnclosingFunctionName(node: ts.Node): string {
-        let current = node.parent;
-        while (current) {
-            if (ts.isFunctionDeclaration(current) && current.name) {
-                return current.name.text;
-            }
-            if (ts.isMethodDeclaration(current) && ts.isIdentifier(current.name)) {
-                return current.name.text;
-            }
-            if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
-                // 変数宣言の名前を取得
-                if (current.parent && ts.isVariableDeclaration(current.parent) && ts.isIdentifier(current.parent.name)) {
-                    return current.parent.name.text;
-                }
-                // プロパティ代入の名前
-                if (current.parent && ts.isPropertyAssignment(current.parent) && ts.isIdentifier(current.parent.name)) {
-                    return current.parent.name.text;
-                }
-                return '(anonymous)';
-            }
-            current = current.parent;
-        }
-        return '(module)';
-    }
-
-    const visit = (node: ts.Node) => {
-        if (ts.isCallExpression(node)) {
-            let calleeName: string | undefined;
-            let targetFileId: string | undefined;
-
-            const expr = node.expression;
-
-            // 直接呼び出し: myFunc()
-            if (ts.isIdentifier(expr)) {
-                calleeName = expr.text;
-
-                // シンボルを解決してファイルを特定
-                try {
-                    const symbol = checker.getSymbolAtLocation(expr);
-                    const decl = symbol?.declarations?.[0];
-                    if (decl) {
-                        const declFile = decl.getSourceFile().fileName;
-                        const normalizedDecl = normalize(declFile);
-                        if (normalizedDecl !== sourceId && !declFile.includes('node_modules')) {
-                            targetFileId = normalizedDecl;
-                        }
-                    }
-                } catch { /* 解決失敗は無視 */ }
-            }
-
-            // メソッド呼び出し: obj.method()
-            if (ts.isPropertyAccessExpression(expr)) {
-                calleeName = expr.name.text;
-            }
-
-            if (calleeName) {
-                const callerName = getEnclosingFunctionName(node);
-                const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
-                deps.push({ callerName, calleeName, targetFileId, line });
-            }
-        }
-
-        ts.forEachChild(node, visit);
-    };
-
-    ts.forEachChild(sourceFile, visit);
-    return deps;
 }
 
 // ─── Phase 3: 循環参照検出 (Tarjan's SCC) ──────────────
@@ -650,6 +595,8 @@ function applyOptimizationMetrics(
     const incomingCount = new Map<string, number>();
     const outgoingCount = new Map<string, number>();
     const sideEffectImporters = new Set<string>();
+    /** source ノードID → re-export エッジ数 */
+    const reExportCountBySource = new Map<string, number>();
 
     for (const edge of edges) {
         incomingCount.set(edge.target, (incomingCount.get(edge.target) || 0) + 1);
@@ -657,15 +604,16 @@ function applyOptimizationMetrics(
         if (edge.kind === 'side-effect') {
             sideEffectImporters.add(edge.source);
         }
+        if (edge.kind === 're-export') {
+            reExportCountBySource.set(edge.source, (reExportCountBySource.get(edge.source) || 0) + 1);
+        }
     }
 
     for (const node of nodes.values()) {
         // ─── Barrel 検出 ──────────────────────────────
         // index.ts/index.tsx で、re-export エッジが多く、自前のエクスポートが少ないファイル
         const isIndexFile = /index\.(ts|tsx|js|jsx)$/.test(node.label);
-        const reExportCount = edges.filter(
-            e => e.source === node.id && e.kind === 're-export'
-        ).length;
+        const reExportCount = reExportCountBySource.get(node.id) || 0;
         const totalOutgoing = outgoingCount.get(node.id) || 0;
         node.isBarrel = isIndexFile && reExportCount > 0 && reExportCount >= totalOutgoing * 0.5;
 

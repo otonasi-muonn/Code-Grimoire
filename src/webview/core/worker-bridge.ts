@@ -111,6 +111,19 @@ export function onGraphReceived(callbacks: {
     // ノード順序を記録
     state.nodeOrder = graph.nodes.map(n => n.id);
 
+    // エッジ索引マップ構築 (O(1) ルックアップ用)
+    state.edgesBySource.clear();
+    state.edgesByTarget.clear();
+    for (const edge of graph.edges) {
+        let bySource = state.edgesBySource.get(edge.source);
+        if (!bySource) { bySource = []; state.edgesBySource.set(edge.source, bySource); }
+        bySource.push(edge);
+
+        let byTarget = state.edgesByTarget.get(edge.target);
+        if (!byTarget) { byTarget = []; state.edgesByTarget.set(edge.target, byTarget); }
+        byTarget.push(edge);
+    }
+
     // Smart Labeling: ノード接続数を計算
     state.nodeDegree.clear();
     for (const node of graph.nodes) {

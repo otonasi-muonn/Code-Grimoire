@@ -487,12 +487,13 @@ function createNodeGraphics(
 
     if (state.runeMode === 'analysis') {
         // 分析モード: データ受け渡し（importedSymbols が多い）ノードを強調
-        const edges = state.graph?.edges || [];
-        const outSymCount = edges
-            .filter(e => e.source === node.id && e.importedSymbols.length > 0 && e.kind !== 'type-import')
+        const outEdges = state.edgesBySource.get(node.id) || [];
+        const inEdges = state.edgesByTarget.get(node.id) || [];
+        const outSymCount = outEdges
+            .filter(e => e.importedSymbols.length > 0 && e.kind !== 'type-import')
             .reduce((s, e) => s + e.importedSymbols.length, 0);
-        const inSymCount = edges
-            .filter(e => e.target === node.id && e.importedSymbols.length > 0 && e.kind !== 'type-import')
+        const inSymCount = inEdges
+            .filter(e => e.importedSymbols.length > 0 && e.kind !== 'type-import')
             .reduce((s, e) => s + e.importedSymbols.length, 0);
         const totalFlow = outSymCount + inSymCount;
 

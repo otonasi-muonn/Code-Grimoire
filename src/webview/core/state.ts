@@ -1,6 +1,6 @@
 // ─── 状態管理 ────────────────────────────────────────────
 import type { Container } from 'pixi.js';
-import type { DependencyGraph, RuneMode, LayoutMode, HierarchyEdge, BubbleGroup, BubbleSizeMode } from '../../shared/types.js';
+import type { DependencyGraph, GraphEdge, RuneMode, LayoutMode, HierarchyEdge, BubbleGroup, BubbleSizeMode } from '../../shared/types.js';
 import type { LODLevel } from './lod.js';
 
 export interface BreadcrumbEntry {
@@ -49,6 +49,10 @@ export interface AppState {
     hiddenEdgeKinds: Set<string>;
     /** フォーカス中のフォルダグループ (泡宇宙) */
     focusedBubbleGroup: BubbleGroup | null;
+    /** エッジ索引: source ノードID → そのノードから出るエッジ一覧 */
+    edgesBySource: Map<string, GraphEdge[]>;
+    /** エッジ索引: target ノードID → そのノードに入るエッジ一覧 */
+    edgesByTarget: Map<string, GraphEdge[]>;
 }
 
 export const state: AppState = {
@@ -74,4 +78,6 @@ export const state: AppState = {
     glowConnectedIds: new Set(),
     hiddenEdgeKinds: new Set(),
     focusedBubbleGroup: null,
+    edgesBySource: new Map(),
+    edgesByTarget: new Map(),
 };

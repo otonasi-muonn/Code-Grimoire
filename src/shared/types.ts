@@ -37,8 +37,6 @@ export interface GraphNode {
     directoryGroup?: string;
     /** セキュリティ警告一覧 (Security Rune 用) */
     securityWarnings?: SecurityWarning[];
-    /** 関数レベルのシンボル依存 (関数呼び出しグラフ用) */
-    functionDeps?: FunctionDep[];
 
     // ─── Phase 5: Optimization ─────────────────────────
     /** Barrel ファイルかどうか (index.ts で re-export のみ) */
@@ -75,8 +73,6 @@ export interface GraphEdge {
     importedSymbols: string[];
     /** import の種類 */
     kind: EdgeKind;
-    /** データ受け渡しに使われるシンボル名 (関数引数・戻り値の型など、分析モード用) */
-    dataSymbols?: string[];
 }
 
 /** エッジの種類 */
@@ -99,18 +95,6 @@ export interface SecurityWarning {
     message: string;
     /** 対象シンボル名 */
     symbol: string;
-}
-
-/** 関数レベルの依存情報 */
-export interface FunctionDep {
-    /** 呼び出し元の関数名 */
-    callerName: string;
-    /** 呼び出し先のシンボル名 */
-    calleeName: string;
-    /** 呼び出し先が属するファイルID (外部ファイルの場合) */
-    targetFileId?: string;
-    /** 行番号 */
-    line: number;
 }
 
 /** 循環参照パス */
