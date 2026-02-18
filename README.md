@@ -158,7 +158,7 @@ npm run test       # テスト実行
 | [PixiJS](https://pixijs.com/) | 8.6.6 | WebGL レンダリング |
 | [pixi-viewport](https://github.com/davidfig/pixi-viewport) | 6.0.3 | 無限キャンバス (drag/pinch/wheel) |
 | [d3-force](https://d3js.org/) | 3.0.0 | 力学シミュレーション |
-| [d3-hierarchy](https://d3js.org/) | 3.1.2 | 階層レイアウト |
+| [d3-hierarchy](https://d3js.org/) | 3.1.2 | 泡宇宙 pack レイアウト |
 | [TypeScript](https://www.typescriptlang.org/) | 5.9.3 | 型安全な開発 |
 | [esbuild](https://esbuild.github.io/) | 0.24.0 | 高速バンドラー |
 
