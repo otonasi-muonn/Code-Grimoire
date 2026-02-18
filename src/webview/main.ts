@@ -404,7 +404,7 @@ function initKeyboardShortcuts() {
             return;
         }
 
-        const layoutKeyMap: Record<string, LayoutMode> = { q: 'force', w: 'tree', e: 'balloon' };
+        const layoutKeyMap: Record<string, LayoutMode> = { q: 'force', w: 'galaxy', e: 'balloon' };
         const layoutMode = layoutKeyMap[e.key.toLowerCase()];
         if (layoutMode && !e.ctrlKey && !e.metaKey && !e.altKey) {
             switchLayoutMode(layoutMode);

@@ -7,7 +7,7 @@
 
 # 🔮 Code Grimoire
 
-> **コードを魔法陣に変換する** — TypeScript / JavaScript の依存関係グラフを、魔導書風のインタラクティブな可視化で表示する VS Code 拡張機能。
+> **コードを魔法陣に変換する** — TypeScript / JavaScript で作られたコードの依存関係を魔力とし、自動的に繋がりを可視化した魔方陣を形成する VS Code 拡張機能。
 
 ---
 
@@ -15,21 +15,23 @@
 
 | Feature | Description |
 |---------|-------------|
-| 🌀 **Magic Circle Graph** | d3-force による力学シミュレーションで依存関係を魔法陣風に配置 |
-| 🎨 **Rune Modes** | `Arcane` / `Celestial` / `Verdant` / `Inferno` / `Abyss` — 5 種のカラーテーマ |
-| 📐 **Layout Modes** | `Force` / `Radial` / `Hierarchy` — 3 種のレイアウトアルゴリズム |
-| 🔍 **Fuzzy Search** | ファイル名インクリメンタル検索 + ディム表示 |
-| 🗺️ **Minimap** | 全体マップ + 現在のビューポートインジケータ |
-| 📊 **Detail Panel** | ノード詳細 + Code Peek（ソースコードプレビュー） |
-| 🧭 **Breadcrumbs** | 探索履歴をパンくずリストで表示 + クリックで戻る |
-| ⚡ **Edge Flow** | 選択ノードの依存方向をアニメーション付きで可視化 |
-| 💫 **Particle Effects** | 読み込み中のパーティクルローディング + クリック時の衝撃波 |
-| 🌐 **i18n** | 日本語 / English 自動切り替え |
-| 📱 **Responsive** | 小さなパネルでも快適に操作可能なレスポンシブデザイン |
+| 🌀 **魔方陣** | d3-force による力学シミュレーションで依存関係を魔法陣風に配置 |
+| 🎨 **RUNE モード** | `標準` / `構造` / `防衛` / `最適化` / `分析` — 5 種の解析視点の切り替え |
+| 📐 **レイアウト** | `魔方陣` / `世界樹` / `泡宇宙` — 3 種の配置方式の切り替え |
+| 🔍 **ファイル検索** | ファイル名の逐次検索 + 強調表示 |
+| 🗺️ **マップ** | 全体マップ + 現在の表示範囲 |
+| 📊 **詳細パネル** | ノード詳細 + ソースコードプレビュー |
+| 🧭 **探索履歴** | 探索履歴をパンくずリストで表示 + クリックで戻る |
+| ⚡ **依存方向の可視化** | 選択ノードの依存方向をアニメーション付きで可視化 |
+| � **データの受け渡し可視化** | ファイル間でやり取りされるシンボル数を分析モードで強調表示 |
+| 🔇 **依存関係の非表示** | エッジ種別（通常・型・動的・副作用・再エクスポート）ごとに表示/非表示をトグル |
+| �💫 **演出** | 読み込み中のパーティクルローディング + クリック時の衝撃波 |
+| 🌐 **言語切り替え** | 日本語 / English 自動切り替え |
+| 📱 **レスポンシブ** | 小さなパネルでも快適に操作可能なレスポンシブデザイン |
 
 ---
 
-## 🏗️ Architecture
+## 🏗️ アーキテクチャ
 
 ```
 src/
@@ -65,14 +67,14 @@ src/
 
 ---
 
-## 🚀 Getting Started
+## 🚀 導入ガイド
 
-### Prerequisites
+### 前提条件
 
 - **VS Code** ≥ 1.100.0
 - **Node.js** ≥ 18
 
-### Install & Build
+### インストール & ビルド
 
 ```bash
 git clone https://github.com/your-org/Code-Grimoire.git
@@ -81,50 +83,50 @@ npm install
 npm run compile
 ```
 
-### Run (Debug)
+### 実行 (デバッグ)
 
 1. VS Code で `F5` を押す
 2. Extension Development Host が起動
-3. コマンドパレット → `CodeGrimoire: Open Grimoire`
+3. コマンドパレット（Shift + Ctrl + P） → `CodeGrimoire: Open Grimoire`
 4. TypeScript プロジェクトの依存グラフが魔法陣として表示 ✨
 
 ---
 
-## ⌨️ Keyboard Shortcuts
+## ⌨️ キーボードショートカット
 
-| Key | Action |
+| キー | 実行 |
 |-----|--------|
 | `Ctrl + F` / `Cmd + F` | 検索トグル |
 | `Escape` | 検索閉じる / 詳細パネル閉じる |
 | `H` | ヘルプ表示トグル |
-| `1`–`5` | Rune モード切替 |
-| `R` | レイアウト切替 (Force → Radial → Hierarchy) |
+| `1`–`5` | モード切替 |
+| `R` | レイアウト切替 (魔方陣 → 世界樹 → 泡宇宙) |
 
 ---
 
-## 🎨 Rune Modes
+## 🎨 Rune モード
 
-| Mode | Theme | Hue Range |
-|------|-------|-----------|
-| 🟣 **Arcane** | 神秘的な紫 | Purple — Violet |
-| 🔵 **Celestial** | 天空の青 | Cyan — Blue |
-| 🟢 **Verdant** | 生命の緑 | Green — Emerald |
-| 🔴 **Inferno** | 業火の赤 | Red — Orange |
-| ⚫ **Abyss** | 深淵の闇 | Dark — Monochrome |
+| モード | 詳細 |
+|------|-----------|
+|  1: **標準** | 依存関係をそのまま表示。ノードの色はファイルパスのハッシュで決定され、同じディレクトリのファイルは似た色相になります |
+|  2: **構造** | 循環参照（import の相互依存）を赤いエッジで強調。該当ノードは明るく、それ以外は石化（灰色）して背景に退きます |
+|  3: **防衛** | 	eval() や dangerouslySetInnerHTML 等のセキュリティリスクを持つファイルを警告色で強調。安全なファイルは石化します |
+|  4: **最適化** | 意図せず必要なコードが削除されること、期待通りに削除されずファイルが肥大化することのリスク（依存関係のブラックボックス化・意図しないコード削除）を可視化。リスクが高いほど明るく、低いものは石化します |
+|  5: **分析** | ファイル間のデータ受け渡し（importされたシンボル数）を可視化。シンボルの流れが多いノードほど明るく表示されます |
 
 ---
 
-## 🔧 Build System
+## 🔧 ビルドシステム
 
-esbuild による **Triple Build**:
+esbuild による **3つのビルド**:
 
-| Target | Format | Output |
+| ターゲット | フォーマット | アウトプット |
 |--------|--------|--------|
 | Extension Host | CJS | `out/extension.js` |
 | Webview | IIFE | `out/webview/main.js` |
 | Web Worker | IIFE | `out/webview/worker.js` |
 
-### Scripts
+### スクリプト
 
 ```bash
 npm run compile    # 本番ビルド
@@ -135,9 +137,9 @@ npm run test       # テスト実行
 
 ---
 
-## 📦 Tech Stack
+## 📦 技術スタック
 
-| Library | Version | Purpose |
+| ライブラリ | バージョン | パーパス |
 |---------|---------|---------|
 | [PixiJS](https://pixijs.com/) | 8.6.6 | WebGL レンダリング |
 | [pixi-viewport](https://github.com/davidfig/pixi-viewport) | 6.0.3 | 無限キャンバス (drag/pinch/wheel) |
@@ -148,6 +150,6 @@ npm run test       # テスト実行
 
 ---
 
-## 📄 License
+## 📄 ライセンス
 
 MIT © Code Grimoire Contributors

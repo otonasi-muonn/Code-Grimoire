@@ -30,16 +30,31 @@ export function refreshBreadcrumbs() {
 
     let xOffset = 0;
     const crumbHeight = 22;
-    const maxLabelLen = 14;
+    const isSmall = window.innerWidth < 600;
+    const maxLabelLen = isSmall ? 8 : 14;
 
-    for (let i = 0; i < state.breadcrumbs.length; i++) {
-        const crumb = state.breadcrumbs[i];
+    // 小画面: 最新3件 + 先頭「…」で省略表示
+    const crumbs = state.breadcrumbs;
+    const maxVisible = isSmall ? 3 : crumbs.length;
+    const startIdx = Math.max(0, crumbs.length - maxVisible);
+
+    // 省略インジケータ
+    if (startIdx > 0) {
+        const ellipsis = createSmartText('…', { fontSize: 12, fill: 0x445588 });
+        ellipsis.anchor.set(0, 0.5);
+        ellipsis.position.set(xOffset, crumbHeight / 2);
+        breadcrumbContainer.addChild(ellipsis);
+        xOffset += 16;
+    }
+
+    for (let i = startIdx; i < crumbs.length; i++) {
+        const crumb = crumbs[i];
         const isCurrent = i === state.breadcrumbs.length - 1;
         const displayLabel = crumb.label.length > maxLabelLen
             ? crumb.label.substring(0, maxLabelLen - 1) + '…'
             : crumb.label;
 
-        if (i > 0) {
+        if (i > startIdx) {
             const arrow = createSmartText('›', { fontSize: 12, fill: 0x445588 });
             arrow.anchor.set(0, 0.5);
             arrow.position.set(xOffset, crumbHeight / 2);

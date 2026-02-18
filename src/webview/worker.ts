@@ -12,7 +12,6 @@ import {
 } from 'd3-force';
 import {
     hierarchy,
-    tree as d3Tree,
     pack as d3Pack,
     type HierarchyNode,
 } from 'd3-hierarchy';
@@ -24,6 +23,7 @@ import type {
     LayoutMode,
     HierarchyEdge,
     BubbleGroup,
+    BubbleSizeMode,
 } from '../shared/types.js';
 
 // ─── 定数 ────────────────────────────────────────────────
@@ -52,7 +52,8 @@ let edges: WorkerEdge[] = [];
 let nodeIndexMap: Map<string, number> = new Map();
 let currentLayoutMode: LayoutMode = 'force';
 let currentFocusNodeId: string | null = null;
-/** 最後に計算された階層エッジ (Tree/Balloon レイアウト時のみ) */
+let currentBubbleSizeMode: BubbleSizeMode = 'lineCount';
+/** 最後に計算された階層エッジ (Balloon/Galaxy レイアウト時のみ) */
 let lastHierarchyEdges: HierarchyEdge[] = [];
 /** 最後に計算された Bubble グループ円 (Balloon レイアウト時のみ) */
 let lastBubbleGroups: BubbleGroup[] = [];
@@ -63,13 +64,25 @@ self.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
     switch (msg.type) {
         case 'INIT':
             currentLayoutMode = msg.payload.layoutMode || 'force';
+            currentBubbleSizeMode = msg.payload.bubbleSizeMode || 'lineCount';
             initLayout(msg.payload.nodes, msg.payload.edges, msg.payload.focusNodeId);
             break;
         case 'FOCUS':
             changeFocus(msg.payload.focusNodeId);
             break;
         case 'LAYOUT_CHANGE':
+            if (msg.payload.bubbleSizeMode) {
+                currentBubbleSizeMode = msg.payload.bubbleSizeMode;
+            }
             switchLayout(msg.payload.mode);
+            break;
+        case 'BUBBLE_SIZE_CHANGE':
+            currentBubbleSizeMode = msg.payload.bubbleSizeMode;
+            if (currentLayoutMode === 'balloon') {
+                // Balloon レイアウトを再計算
+                const targets = calculateStaticLayout(currentLayoutMode);
+                morphToPositions(targets);
+            }
             break;
     }
 };
@@ -95,7 +108,7 @@ function initLayout(
     if (currentLayoutMode === 'force') {
         initForceSimulation(focusNodeId);
     } else {
-        // tree / balloon: 静的レイアウトを計算して送信
+        // balloon / galaxy: 静的レイアウトを計算して送信
         const targets = calculateStaticLayout(currentLayoutMode);
         applyPositions(targets);
         sendPositions(1.0);
@@ -174,7 +187,7 @@ function switchLayout(newMode: LayoutMode): void {
         lastBubbleGroups = [];
         initForceSimulation(currentFocusNodeId);
     } else {
-        // tree / balloon: 静的レイアウトへモーフィング
+        // balloon / galaxy: 静的レイアウトへモーフィング
         if (simulation) {
             simulation.stop();
             simulation = null;
@@ -185,7 +198,7 @@ function switchLayout(newMode: LayoutMode): void {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 静的レイアウト計算 (Tree / Balloon)
+// 静的レイアウト計算 (Balloon / Galaxy)
 // ═══════════════════════════════════════════════════════════
 
 /** ディレクトリ階層ツリーを構築 */
@@ -244,40 +257,211 @@ function collapseTree(node: DirTreeNode): DirTreeNode {
     return node;
 }
 
-/** Tree レイアウト: トップダウン縦型ツリー (Yggdrasil) */
-function calculateTreeLayout(dirTree: DirTreeNode): Map<string, { x: number; y: number }> {
-    const root = hierarchy(dirTree)
-        .sum(d => d.value || 0)
-        .sort((a, b) => (b.value || 0) - (a.value || 0));
-
-    // nodeSize: [横方向のノード間距離, 縦方向(深さ)のレベル間距離]
-    // ノード数に応じてスケーリング（密集を防ぐ）
-    const hSpacing = Math.max(60, 120 - nodes.length * 0.5);
-    const vSpacing = Math.max(100, 180 - nodes.length * 0.8);
-
-    const treeLayout = d3Tree<DirTreeNode>()
-        .nodeSize([hSpacing, vSpacing])
-        .separation((a, b) => (a.parent === b.parent ? 1 : 2));
-
-    treeLayout(root);
-
+/** Galaxy レイアウト: BFS 深度ベースの放射状配置 (銀河) */
+function calculateGalaxyLayout(): Map<string, { x: number; y: number }> {
     const result = new Map<string, { x: number; y: number }>();
 
-    // nodeSize モードでは原点がルートになるのでそのまま使える
-    root.each((d: HierarchyNode<DirTreeNode>) => {
-        if (d.data.nodeId) {
-            result.set(d.data.nodeId, {
-                x: (d as any).x as number,
-                y: (d as any).y as number,
+    // エントリーポイントを推定: 最も多くの outgoing edges を持つノード
+    // (index.ts, main.ts, app.ts 等がエントリーになりやすい)
+    const outDegree = new Map<string, number>();
+    const inDegree = new Map<string, number>();
+    for (const n of nodes) {
+        outDegree.set(n.id, 0);
+        inDegree.set(n.id, 0);
+    }
+    for (const e of edges) {
+        outDegree.set(e.source, (outDegree.get(e.source) || 0) + 1);
+        inDegree.set(e.target, (inDegree.get(e.target) || 0) + 1);
+    }
+
+    // エントリーポイント: inDegree が 0 かつ outDegree が最大のノード
+    // いなければ outDegree が最大のノード
+    let entryNodeId: string | null = currentFocusNodeId;
+    if (!entryNodeId || !nodeIndexMap.has(entryNodeId)) {
+        // inDegree=0 のノードの中で outDegree 最大
+        let bestScore = -1;
+        for (const n of nodes) {
+            const inD = inDegree.get(n.id) || 0;
+            const outD = outDegree.get(n.id) || 0;
+            const score = (inD === 0 ? 1000 : 0) + outD;
+            if (score > bestScore) {
+                bestScore = score;
+                entryNodeId = n.id;
+            }
+        }
+    }
+
+    if (!entryNodeId) {
+        // fallback: 全ノードを円形に配置
+        const angleStep = (Math.PI * 2) / Math.max(1, nodes.length);
+        nodes.forEach((n, i) => {
+            result.set(n.id, {
+                x: Math.cos(angleStep * i) * 400,
+                y: Math.sin(angleStep * i) * 400,
+            });
+        });
+        return result;
+    }
+
+    // BFS from entry point to assign depth
+    const depthMap = new Map<string, number>();
+    const adjacency = new Map<string, string[]>();
+    for (const n of nodes) { adjacency.set(n.id, []); }
+    for (const e of edges) {
+        adjacency.get(e.source)?.push(e.target);
+        // 逆方向も辿る (被依存も考慮して到達可能性を広げる)
+        adjacency.get(e.target)?.push(e.source);
+    }
+
+    // BFS (有向: source→target のみ) で深度計算
+    const forwardAdj = new Map<string, string[]>();
+    for (const n of nodes) { forwardAdj.set(n.id, []); }
+    for (const e of edges) {
+        forwardAdj.get(e.source)?.push(e.target);
+    }
+
+    const bfsQueue: string[] = [entryNodeId];
+    depthMap.set(entryNodeId, 0);
+    let maxDepth = 0;
+
+    while (bfsQueue.length > 0) {
+        const current = bfsQueue.shift()!;
+        const currentDepth = depthMap.get(current)!;
+
+        // 有向BFS (依存方向のみ)
+        for (const neighbor of (forwardAdj.get(current) || [])) {
+            if (!depthMap.has(neighbor)) {
+                const newDepth = currentDepth + 1;
+                depthMap.set(neighbor, newDepth);
+                if (newDepth > maxDepth) { maxDepth = newDepth; }
+                bfsQueue.push(neighbor);
+            }
+        }
+    }
+
+    // 到達不能なノードを検出 — 逆方向BFSも試す
+    const reverseAdj = new Map<string, string[]>();
+    for (const n of nodes) { reverseAdj.set(n.id, []); }
+    for (const e of edges) {
+        reverseAdj.get(e.target)?.push(e.source);
+    }
+
+    // エントリーから到達不能 → 逆向きでも到達不能なら真に孤立
+    const unreachableNodes: WorkerNode[] = [];
+    const reachableInReverse = new Set<string>();
+    const revQueue: string[] = [entryNodeId];
+    reachableInReverse.add(entryNodeId);
+    while (revQueue.length > 0) {
+        const current = revQueue.shift()!;
+        for (const neighbor of (reverseAdj.get(current) || [])) {
+            if (!reachableInReverse.has(neighbor)) {
+                reachableInReverse.add(neighbor);
+                revQueue.push(neighbor);
+            }
+        }
+    }
+
+    for (const n of nodes) {
+        if (!depthMap.has(n.id)) {
+            // 逆方向でも到達可能なら、逆依存としてマーク
+            if (reachableInReverse.has(n.id)) {
+                depthMap.set(n.id, maxDepth + 1);
+            } else {
+                unreachableNodes.push(n);
+            }
+        }
+    }
+
+    // 到達不能ノードは最外殻リング
+    const unreachableDepth = maxDepth + 2;
+    for (const n of unreachableNodes) {
+        depthMap.set(n.id, unreachableDepth);
+    }
+    if (unreachableNodes.length > 0) {
+        maxDepth = unreachableDepth;
+    }
+
+    // 深度ごとのノードをグループ化
+    const depthGroups = new Map<number, WorkerNode[]>();
+    for (const n of nodes) {
+        const d = depthMap.get(n.id) || 0;
+        if (!depthGroups.has(d)) { depthGroups.set(d, []); }
+        depthGroups.get(d)!.push(n);
+    }
+
+    // 放射状配置: 深度→半径、同じ深度のノードは等角に配置
+    const RING_SPACING = 200;
+    const CENTER_RADIUS = 0;
+
+    for (const [depth, group] of depthGroups) {
+        if (depth === 0) {
+            // エントリーポイントは中心
+            for (const n of group) {
+                result.set(n.id, { x: 0, y: 0 });
+            }
+            continue;
+        }
+
+        const radius = CENTER_RADIUS + depth * RING_SPACING;
+        const angleStep = (Math.PI * 2) / Math.max(1, group.length);
+        // 深度ごとにオフセットを付けてスパイラル感を出す
+        const angleOffset = depth * 0.618 * Math.PI;
+
+        for (let i = 0; i < group.length; i++) {
+            const angle = angleStep * i + angleOffset;
+            // 依存数が多いノードほど内側に微調整
+            const nodeDeps = (outDegree.get(group[i].id) || 0) + (inDegree.get(group[i].id) || 0);
+            const radiusJitter = Math.min(RING_SPACING * 0.3, nodeDeps * 5);
+            const finalRadius = Math.max(30, radius - radiusJitter);
+
+            result.set(group[i].id, {
+                x: Math.cos(angle) * finalRadius,
+                y: Math.sin(angle) * finalRadius,
             });
         }
-    });
+    }
+
+    // リング情報を更新 (Galaxy 用)
+    for (const n of nodes) {
+        const depth = depthMap.get(n.id) || 0;
+        if (depth === 0) {
+            n.ring = 'focus';
+        } else if (depth <= 2) {
+            n.ring = 'context';
+        } else {
+            n.ring = 'global';
+        }
+    }
+
+    // 階層エッジ: 有向エッジのうち深度が連続するものを階層エッジとする
+    lastHierarchyEdges = [];
+    for (const e of edges) {
+        const srcDepth = depthMap.get(e.source);
+        const tgtDepth = depthMap.get(e.target);
+        if (srcDepth !== undefined && tgtDepth !== undefined && tgtDepth === srcDepth + 1) {
+            lastHierarchyEdges.push({ parent: e.source, child: e.target });
+        }
+    }
 
     return result;
 }
 
 /** Balloon レイアウト: パック円充填 (Bubble) — ディレクトリグループ円付き */
 function calculateBalloonLayout(dirTree: DirTreeNode): Map<string, { x: number; y: number }> {
+    // サイズモードに応じて value を再計算
+    if (currentBubbleSizeMode === 'fileSize') {
+        const nodeMap = new Map<string, WorkerNode>();
+        for (const n of nodes) { nodeMap.set(n.id, n); }
+        const assignFileSize = (d: DirTreeNode) => {
+            if (d.nodeId) {
+                const workerNode = nodeMap.get(d.nodeId);
+                d.value = Math.max(workerNode?.fileSize || workerNode?.lineCount || 10, 10);
+            }
+            for (const child of d.children) { assignFileSize(child); }
+        };
+        assignFileSize(dirTree);
+    }
+
     const root = hierarchy(dirTree)
         .sum(d => d.value || 10)
         .sort((a, b) => (b.value || 0) - (a.value || 0));
@@ -301,12 +485,20 @@ function calculateBalloonLayout(dirTree: DirTreeNode): Map<string, { x: number; 
             result.set(d.data.nodeId, { x: dx, y: dy });
         } else if (d.depth > 0 && d.children && d.children.length > 0) {
             // 中間ノード (ディレクトリ) — グループ円として収集
+            // 直下の葉ノードIDを再帰収集
+            const childIds: string[] = [];
+            const collectLeaves = (n: HierarchyNode<DirTreeNode>) => {
+                if (n.data.nodeId) { childIds.push(n.data.nodeId); }
+                if (n.children) { for (const c of n.children) { collectLeaves(c); } }
+            };
+            collectLeaves(d);
             groups.push({
                 label: d.data.name,
                 x: dx,
                 y: dy,
                 r: dr,
                 depth: d.depth,
+                childNodeIds: childIds,
             });
         }
     });
@@ -317,18 +509,21 @@ function calculateBalloonLayout(dirTree: DirTreeNode): Map<string, { x: number; 
 
 /** レイアウトモードに応じた静的座標を計算し、階層エッジも抽出する */
 function calculateStaticLayout(mode: LayoutMode): Map<string, { x: number; y: number }> {
-    const dirTree = collapseTree(buildDirectoryTree());
-
     // Bubble グループは balloon 時のみ (calculateBalloonLayout 内で設定)
     lastBubbleGroups = [];
 
-    // 座標計算
-    const positions = mode === 'tree'
-        ? calculateTreeLayout(dirTree)
-        : calculateBalloonLayout(dirTree);
+    if (mode === 'galaxy') {
+        // Galaxy: BFS 深度ベースの放射状配置
+        const positions = calculateGalaxyLayout();
+        // Galaxy は独自に階層エッジを設定済み
+        return positions;
+    }
 
-    // 階層エッジ抽出: ディレクトリツリーの親子関係から、
-    // 葉ノード(ファイル)同士の「同じ親を持つ兄弟」および「親子」関係を復元
+    // balloon: ディレクトリツリーベース
+    const dirTree = collapseTree(buildDirectoryTree());
+    const positions = calculateBalloonLayout(dirTree);
+
+    // 階層エッジ抽出: ディレクトリツリーの親子関係から復元
     lastHierarchyEdges = extractHierarchyEdges(dirTree);
 
     return positions;
@@ -543,7 +738,7 @@ function sendDone(): void {
         payload: {
             positions,
             rings,
-            // Smart Edges: Tree/Balloon レイアウト時のみ階層エッジを含める
+            // Smart Edges: balloon/galaxy レイアウト時のみ階層エッジを含める
             hierarchyEdges: currentLayoutMode !== 'force' ? lastHierarchyEdges : undefined,
             // Bubble グループ円: Balloon レイアウト時のみ
             bubbleGroups: currentLayoutMode === 'balloon' ? lastBubbleGroups : undefined,

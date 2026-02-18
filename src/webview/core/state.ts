@@ -1,6 +1,6 @@
 // ─── 状態管理 ────────────────────────────────────────────
 import type { Container } from 'pixi.js';
-import type { DependencyGraph, RuneMode, LayoutMode, HierarchyEdge, BubbleGroup } from '../../shared/types.js';
+import type { DependencyGraph, RuneMode, LayoutMode, HierarchyEdge, BubbleGroup, BubbleSizeMode } from '../../shared/types.js';
 import type { LODLevel } from './lod.js';
 
 export interface BreadcrumbEntry {
@@ -31,6 +31,8 @@ export interface AppState {
     currentLOD: LODLevel;
     /** 現在のレイアウトモード (V3) */
     layoutMode: LayoutMode;
+    /** 泡宇宙のサイズモード (行数 / ファイルサイズ) */
+    bubbleSizeMode: BubbleSizeMode;
     /** 階層エッジ (Tree/Balloon 時のみ、V3.5) */
     hierarchyEdges: HierarchyEdge[];
     /** Bubble レイアウト時のディレクトリグループ円 (V6) */
@@ -43,6 +45,10 @@ export interface AppState {
     nodeContainerMap: Map<string, Container>;
     /** ホバー中の接続ノードID群 (Interactive Glow 用) */
     glowConnectedIds: Set<string>;
+    /** 非表示にするエッジ種別 (依存関係非表示機能) */
+    hiddenEdgeKinds: Set<string>;
+    /** フォーカス中のフォルダグループ (泡宇宙) */
+    focusedBubbleGroup: BubbleGroup | null;
 }
 
 export const state: AppState = {
@@ -59,10 +65,13 @@ export const state: AppState = {
     runeMode: 'default',
     currentLOD: 'mid',
     layoutMode: 'force',
+    bubbleSizeMode: 'lineCount',
     hierarchyEdges: [],
     bubbleGroups: [],
     breadcrumbs: [],
     nodeDegree: new Map(),
     nodeContainerMap: new Map(),
     glowConnectedIds: new Set(),
+    hiddenEdgeKinds: new Set(),
+    focusedBubbleGroup: null,
 };

@@ -21,6 +21,8 @@ export interface GraphNode {
     exports: SymbolInfo[];
     /** ファイルの行数 */
     lineCount: number;
+    /** ファイルサイズ (bytes) */
+    fileSize?: number;
     /** 同心円上のリング配置 (Phase 2で使用) */
     ring?: 'focus' | 'context' | 'global';
 
@@ -73,6 +75,8 @@ export interface GraphEdge {
     importedSymbols: string[];
     /** import の種類 */
     kind: EdgeKind;
+    /** データ受け渡しに使われるシンボル名 (関数引数・戻り値の型など、分析モード用) */
+    dataSymbols?: string[];
 }
 
 /** エッジの種類 */
@@ -121,13 +125,18 @@ export type RuneMode =
     | 'architecture'     // 構造の紋章: 循環参照・モジュール境界
     | 'security'         // セキュリティの紋章: Taint・危険関数
     | 'optimization'     // 最適化の紋章: Tree-shaking スコア
-    | 'refactoring';     // 再生の紋章: Git Hotspot・テスト死角
+    | 'analysis';        // 分析の紋章: データ受け渡し可視化
 
 /** レイアウトモード (V3) */
 export type LayoutMode =
     | 'force'      // Mandala (魔法陣): d3-force 物理演算
-    | 'tree'       // Yggdrasil (世界樹): 放射状ツリー
-    | 'balloon';   // Bubble (泡宇宙): パック円充填
+    | 'balloon'    // Bubble (泡宇宙): パック円充填
+    | 'galaxy';    // Galaxy (銀河): BFS深度ベースの放射状配置
+
+/** 泡宇宙のサイズモード */
+export type BubbleSizeMode =
+    | 'lineCount'  // 行数でサイズ決定
+    | 'fileSize';  // ファイルサイズでサイズ決定
 
 /** Git Hotspot 情報 */
 export interface GitHotspot {
@@ -290,6 +299,8 @@ export interface WorkerMsgInit {
         focusNodeId: string | null;
         /** 初期レイアウトモード (V3) — 省略時は 'force' */
         layoutMode?: LayoutMode;
+        /** 泡宇宙のサイズモード — 省略時は 'lineCount' */
+        bubbleSizeMode?: BubbleSizeMode;
     };
 }
 
@@ -306,6 +317,8 @@ export interface WorkerMsgLayoutChange {
     type: 'LAYOUT_CHANGE';
     payload: {
         mode: LayoutMode;
+        /** 泡宇宙のサイズモード — 省略時は 'lineCount' */
+        bubbleSizeMode?: BubbleSizeMode;
     };
 }
 
@@ -327,7 +340,7 @@ export interface WorkerMsgDone {
         positions: Float32Array;
         /** ノードIDごとのリング情報 */
         rings: Record<string, 'focus' | 'context' | 'global'>;
-        /** 階層エッジ (Tree/Balloon レイアウト時のみ。ディレクトリ親子関係) */
+        /** 階層エッジ (Balloon/Galaxy レイアウト時のみ。ディレクトリ親子関係) */
         hierarchyEdges?: HierarchyEdge[];
         /** Bubble レイアウト時のディレクトリグループ円 */
         bubbleGroups?: BubbleGroup[];
@@ -354,10 +367,20 @@ export interface BubbleGroup {
     r: number;
     /** 階層の深さ (0=ルート) */
     depth: number;
+    /** このディレクトリ直下のファイルノードIDリスト */
+    childNodeIds: string[];
+}
+
+/** Worker に送る泡宇宙サイズモード変更メッセージ */
+export interface WorkerMsgBubbleSizeChange {
+    type: 'BUBBLE_SIZE_CHANGE';
+    payload: {
+        bubbleSizeMode: BubbleSizeMode;
+    };
 }
 
 /** Worker に送る全メッセージの Union */
-export type MainToWorkerMessage = WorkerMsgInit | WorkerMsgFocus | WorkerMsgLayoutChange;
+export type MainToWorkerMessage = WorkerMsgInit | WorkerMsgFocus | WorkerMsgLayoutChange | WorkerMsgBubbleSizeChange;
 
 /** Worker から返す全メッセージの Union */
 export type WorkerToMainMessage = WorkerMsgTick | WorkerMsgDone;
@@ -367,6 +390,8 @@ export interface WorkerNode {
     id: string;
     ring: 'focus' | 'context' | 'global';
     lineCount: number;
+    /** ファイルサイズ (bytes) — 泡宇宙のサイズモード用 */
+    fileSize?: number;
     /** d3-force が利用する座標 (初期値 undefined → d3 が設定) */
     x?: number;
     y?: number;

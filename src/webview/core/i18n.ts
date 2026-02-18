@@ -1,14 +1,18 @@
 // ─── I18n (Localization) ─────────────────────────────────
 
 export type TranslationKey =
-    | 'rune.default' | 'rune.architecture' | 'rune.security' | 'rune.optimization' | 'rune.refactoring'
-    | 'layout.mandala' | 'layout.yggdrasil' | 'layout.bubble'
+    | 'rune.default' | 'rune.architecture' | 'rune.security' | 'rune.optimization' | 'rune.analysis'
+    | 'layout.mandala' | 'layout.galaxy' | 'layout.bubble'
+    | 'bubble.size.lineCount' | 'bubble.size.fileSize'
     | 'dp.path' | 'dp.info' | 'dp.git' | 'dp.exports' | 'dp.imports' | 'dp.importedBy'
     | 'dp.securityWarnings' | 'dp.optimization' | 'dp.codePreview'
+    | 'dp.dataFlow'
+    | 'dp.folder' | 'dp.folderFiles' | 'dp.folderStats'
     | 'search.placeholder' | 'search.matches'
     | 'status.computing' | 'status.awaiting'
     | 'loading.summoning'
-    | 'help.title' | 'help.mouse' | 'help.keyboard' | 'help.legend';
+    | 'help.title' | 'help.mouse' | 'help.keyboard' | 'help.legend'
+    | 'edge.toggle.static' | 'edge.toggle.type' | 'edge.toggle.dynamic' | 'edge.toggle.sideEffect' | 'edge.toggle.reExport';
 
 const translations: Record<string, Record<TranslationKey, string>> = {
     en: {
@@ -16,10 +20,12 @@ const translations: Record<string, Record<TranslationKey, string>> = {
         'rune.architecture': '⬡ Architecture',
         'rune.security': '⚠ Security',
         'rune.optimization': '⚡ Optimization',
-        'rune.refactoring': '🔥 Refactoring',
+        'rune.analysis': '� Analysis',
         'layout.mandala': '◎ Mandala',
-        'layout.yggdrasil': '🌳 Yggdrasil',
+        'layout.galaxy': '� Galaxy',
         'layout.bubble': '◉ Bubble',
+        'bubble.size.lineCount': '📏 Lines',
+        'bubble.size.fileSize': '📦 Size',
         'dp.path': 'Path',
         'dp.info': 'Info',
         'dp.git': 'Git',
@@ -29,6 +35,10 @@ const translations: Record<string, Record<TranslationKey, string>> = {
         'dp.securityWarnings': '⚠ Security Warnings',
         'dp.optimization': '⚡ Optimization',
         'dp.codePreview': 'Code Preview',
+        'dp.dataFlow': 'Data Flow',
+        'dp.folder': 'Folder',
+        'dp.folderFiles': 'Files',
+        'dp.folderStats': 'Statistics',
         'search.placeholder': 'Search files... (Ctrl+F)',
         'search.matches': 'matches',
         'status.computing': 'Computing layout...',
@@ -38,16 +48,23 @@ const translations: Record<string, Record<TranslationKey, string>> = {
         'help.mouse': 'Mouse',
         'help.keyboard': 'Keyboard',
         'help.legend': 'Symbol Legend',
+        'edge.toggle.static': 'Static Import',
+        'edge.toggle.type': 'Type Import',
+        'edge.toggle.dynamic': 'Dynamic Import',
+        'edge.toggle.sideEffect': 'Side Effect',
+        'edge.toggle.reExport': 'Re-export',
     },
     ja: {
         'rune.default': '◇ 標準',
         'rune.architecture': '⬡ 構造 (Architecture)',
         'rune.security': '⚠ 防衛 (Security)',
         'rune.optimization': '⚡ 最適化 (Optimization)',
-        'rune.refactoring': '🔥 再生 (Refactoring)',
+        'rune.analysis': '� 分析 (Analysis)',
         'layout.mandala': '◎ 魔法陣 (Mandala)',
-        'layout.yggdrasil': '🌳 世界樹 (Yggdrasil)',
+        'layout.galaxy': '� 銀河 (Galaxy)',
         'layout.bubble': '◉ 泡宇宙 (Bubble)',
+        'bubble.size.lineCount': '📏 行数',
+        'bubble.size.fileSize': '📦 サイズ',
         'dp.path': 'パス',
         'dp.info': '情報',
         'dp.git': 'Git',
@@ -57,6 +74,10 @@ const translations: Record<string, Record<TranslationKey, string>> = {
         'dp.securityWarnings': '⚠ セキュリティ警告',
         'dp.optimization': '⚡ 最適化',
         'dp.codePreview': 'コード閲覧',
+        'dp.dataFlow': 'データの流れ',
+        'dp.folder': 'フォルダ',
+        'dp.folderFiles': '配下ファイル',
+        'dp.folderStats': '統計',
         'search.placeholder': 'ファイルを検索... (Ctrl+F)',
         'search.matches': '件',
         'status.computing': '魔法陣を構築中...',
@@ -66,6 +87,11 @@ const translations: Record<string, Record<TranslationKey, string>> = {
         'help.mouse': 'マウス操作',
         'help.keyboard': 'キーボード',
         'help.legend': 'シンボル凡例',
+        'edge.toggle.static': '通常インポート',
+        'edge.toggle.type': '型インポート',
+        'edge.toggle.dynamic': '動的インポート',
+        'edge.toggle.sideEffect': '副作用インポート',
+        'edge.toggle.reExport': '再エクスポート',
     },
 };
 

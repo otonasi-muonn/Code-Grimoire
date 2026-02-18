@@ -133,6 +133,7 @@ export function onGraphReceived(callbacks: {
         id: n.id,
         ring: 'global' as const,  // 初期状態は全て global、Worker 側で割り当て
         lineCount: n.lineCount,
+        fileSize: n.fileSize,
     }));
 
     const workerEdges: WorkerEdge[] = graph.edges
@@ -155,6 +156,7 @@ export function onGraphReceived(callbacks: {
             edges: workerEdges,
             focusNodeId: state.focusNodeId,
             layoutMode: state.layoutMode,
+            bubbleSizeMode: state.bubbleSizeMode,
         },
     });
 

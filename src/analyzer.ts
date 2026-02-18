@@ -189,6 +189,7 @@ function buildGraph(program: ts.Program, workspaceRoot: string, startTime: numbe
         if (filePath.includes('node_modules')) { continue; }
 
         const lineCount = sourceFile.getLineAndCharacterOfPosition(sourceFile.getEnd()).line + 1;
+        const fileSize = sourceFile.getFullText().length;
 
         // エクスポートされたシンボルを収集
         const exports = collectExports(sourceFile, checker);
@@ -201,6 +202,7 @@ function buildGraph(program: ts.Program, workspaceRoot: string, startTime: numbe
             kind: getNodeKind(sourceFile),
             exports,
             lineCount,
+            fileSize,
         };
 
         // import文を走査してエッジを生成

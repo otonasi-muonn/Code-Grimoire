@@ -10,7 +10,7 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:codegrimoire.openGrimoire"
+    
   ],
   "main": "./out/extension.js",
   "contributes": {

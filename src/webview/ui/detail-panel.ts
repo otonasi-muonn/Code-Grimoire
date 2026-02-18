@@ -3,6 +3,7 @@ import { state } from '../core/state.js';
 import { sendMessage } from '../core/vscode-api.js';
 import { t } from '../core/i18n.js';
 import { selectedNodeId, setSelectedNodeId } from '../renderer/graph.js';
+import type { BubbleGroup } from '../../shared/types.js';
 
 let detailPanel: HTMLElement | null = null;
 let detailTitle: HTMLElement | null = null;
@@ -173,6 +174,23 @@ export function openDetailPanel(nodeId: string) {
         </div>`;
     }
 
+    // データフロー情報 (分析モード向けだが常に表示)
+    {
+        const outSymbols = outEdges.filter(e => e.kind !== 'type-import' && e.importedSymbols.length > 0);
+        const inSymbols = inEdges.filter(e => e.kind !== 'type-import' && e.importedSymbols.length > 0);
+        const totalOut = outSymbols.reduce((s, e) => s + e.importedSymbols.length, 0);
+        const totalIn = inSymbols.reduce((s, e) => s + e.importedSymbols.length, 0);
+        if (totalOut > 0 || totalIn > 0) {
+            html += `<div class="dp-section">
+                <div class="dp-label">${t('dp.dataFlow')}</div>
+                <div class="dp-value">
+                    <span class="dp-badge" style="color:#66ddff">↑ ${totalOut} symbols out</span>
+                    <span class="dp-badge" style="color:#66ddff">↓ ${totalIn} symbols in</span>
+                </div>
+            </div>`;
+        }
+    }
+
     detailContent.innerHTML = html;
     detailPanel.classList.add('visible');
 
@@ -264,6 +282,137 @@ function simpleHighlight(code: string, language: string): string {
     }
 
     return escaped;
+}
+
+// ─── フォルダ詳細パネル ──────────────────────────────────
+export function openFolderDetailPanel(group: BubbleGroup) {
+    const graph = state.graph;
+    if (!graph || !detailPanel || !detailTitle || !detailContent) { return; }
+
+    // 選択ノードはクリアしてフォルダモードにする
+    setSelectedNodeId(null);
+
+    detailTitle.textContent = `📁 ${group.label}`;
+
+    // アクションボタン
+    let existingActions = detailPanel.querySelector('.dp-actions');
+    if (existingActions) { existingActions.remove(); }
+
+    // 配下のファイルノードを収集
+    const childNodes = group.childNodeIds
+        .map(id => graph.nodes.find(n => n.id === id))
+        .filter((n): n is NonNullable<typeof n> => n !== undefined);
+
+    // 統計計算
+    const totalLines = childNodes.reduce((s, n) => s + n.lineCount, 0);
+    const totalExports = childNodes.reduce((s, n) => s + n.exports.length, 0);
+    const kindsCount = new Map<string, number>();
+    for (const n of childNodes) {
+        kindsCount.set(n.kind, (kindsCount.get(n.kind) || 0) + 1);
+    }
+
+    // 外部への依存と外部からの依存
+    const childIdSet = new Set(group.childNodeIds);
+    const externalOutEdges = graph.edges.filter(e => childIdSet.has(e.source) && !childIdSet.has(e.target));
+    const externalInEdges = graph.edges.filter(e => childIdSet.has(e.target) && !childIdSet.has(e.source));
+    const internalEdges = graph.edges.filter(e => childIdSet.has(e.source) && childIdSet.has(e.target));
+
+    let html = '';
+
+    // フォルダ情報
+    html += `<div class="dp-section">
+        <div class="dp-label">${t('dp.folderStats')}</div>
+        <div class="dp-value">
+            <span class="dp-badge">${childNodes.length} files</span>
+            <span class="dp-badge">${totalLines} lines</span>
+            <span class="dp-badge">${totalExports} exports</span>
+        </div>
+    </div>`;
+
+    // ファイル種別の内訳
+    if (kindsCount.size > 0) {
+        html += `<div class="dp-section">
+            <div class="dp-label">${t('dp.info')}</div>
+            <div class="dp-value">${[...kindsCount.entries()].map(([kind, count]) =>
+                `<span class="dp-badge">${kind}: ${count}</span>`
+            ).join('')}</div>
+        </div>`;
+    }
+
+    // 内部接続
+    if (internalEdges.length > 0) {
+        html += `<div class="dp-section">
+            <div class="dp-label">Internal Edges</div>
+            <div class="dp-value">
+                <span class="dp-badge" style="color:#6699ff">${internalEdges.length} connections</span>
+            </div>
+        </div>`;
+    }
+
+    // 外部への依存
+    if (externalOutEdges.length > 0) {
+        const extTargets = new Set(externalOutEdges.map(e => e.target));
+        html += `<div class="dp-section">
+            <div class="dp-label">${t('dp.imports')} (${externalOutEdges.length})</div>
+            <ul class="dp-dep-list">${[...extTargets].map(tid => {
+                const targetNode = graph.nodes.find(n => n.id === tid);
+                const label = targetNode?.label || tid.split('/').pop() || tid;
+                return `<li data-node-id="${escapeHtml(tid)}">${escapeHtml(label)}</li>`;
+            }).join('')}</ul>
+        </div>`;
+    }
+
+    // 外部からの依存
+    if (externalInEdges.length > 0) {
+        const extSources = new Set(externalInEdges.map(e => e.source));
+        html += `<div class="dp-section">
+            <div class="dp-label">${t('dp.importedBy')} (${externalInEdges.length})</div>
+            <ul class="dp-dep-list">${[...extSources].map(sid => {
+                const srcNode = graph.nodes.find(n => n.id === sid);
+                const label = srcNode?.label || sid.split('/').pop() || sid;
+                return `<li data-node-id="${escapeHtml(sid)}">${escapeHtml(label)}</li>`;
+            }).join('')}</ul>
+        </div>`;
+    }
+
+    // 配下ファイル一覧
+    html += `<div class="dp-section">
+        <div class="dp-label">${t('dp.folderFiles')} (${childNodes.length})</div>
+        <ul class="dp-dep-list">${childNodes
+            .sort((a, b) => b.lineCount - a.lineCount)
+            .map(n =>
+                `<li data-node-id="${escapeHtml(n.id)}">${escapeHtml(n.label)} <small style="color:rgba(100,140,200,0.5)">(${n.lineCount}L)</small></li>`
+            ).join('')}</ul>
+    </div>`;
+
+    // セキュリティ警告があるファイル
+    const warningFiles = childNodes.filter(n => n.securityWarnings && n.securityWarnings.length > 0);
+    if (warningFiles.length > 0) {
+        const totalWarnings = warningFiles.reduce((s, n) => s + (n.securityWarnings?.length || 0), 0);
+        html += `<div class="dp-section">
+            <div class="dp-label">${t('dp.securityWarnings')}</div>
+            <div class="dp-value">
+                <span class="dp-badge" style="color:#ff8800">${totalWarnings} warnings in ${warningFiles.length} files</span>
+            </div>
+        </div>`;
+    }
+
+    detailContent.innerHTML = html;
+    detailPanel.classList.add('visible');
+
+    // リンククリックハンドラ
+    const depLinks = detailContent.querySelectorAll('[data-node-id]');
+    depLinks.forEach(el => {
+        el.addEventListener('click', () => {
+            const targetId = (el as HTMLElement).dataset.nodeId;
+            if (targetId) {
+                _summonNode(targetId);
+                openDetailPanel(targetId);
+            }
+        });
+    });
+
+    _renderGraph();
 }
 
 export function closeDetailPanel() {

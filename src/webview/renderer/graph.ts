@@ -1,13 +1,14 @@
 // ─── Ghost Trail + Graph Rendering ──────────────────────
 import { Graphics, Text, TextStyle, Container, FederatedPointerEvent } from 'pixi.js';
 import type { Viewport } from 'pixi-viewport';
-import type { GraphNode, RuneMode } from '../../shared/types.js';
+import type { GraphNode, RuneMode, EdgeKind, BubbleGroup } from '../../shared/types.js';
 import { state } from '../core/state.js';
-import { getNodeColor, getNodeGlowColor, getRingAlpha } from '../utils/color.js';
+import { getNodeColor, getNodeGlowColor, getRingAlpha, hslToHex } from '../utils/color.js';
 import { createSmartText } from '../utils/font.js';
 import { drawDashedLine, getNodeSides, drawRingGuides, drawBubbleGroups } from '../utils/drawing.js';
 import { animateScale, triggerClickRipple, startEdgeFlow, stopEdgeFlow } from './effects.js';
 import { dimmedNodes } from '../ui/search.js';
+import { openFolderDetailPanel } from '../ui/detail-panel.js';
 
 /** 外部から注入される関数・オブジェクト参照 */
 let _viewport: Viewport;
@@ -100,6 +101,55 @@ function drawGhostTrail() {
     _edgeContainer.addChild(ghostGfx);
 }
 
+// ─── 泡宇宙: フォルダグループタップ処理 ──────────────────
+function handleBubbleGroupTap(group: BubbleGroup) {
+    if (group.childNodeIds.length === 0) { return; }
+
+    if (group.childNodeIds.length === 1) {
+        // 子ノードが1つ → そのノードを直接 summon
+        const nodeId = group.childNodeIds[0];
+        _summonNode(nodeId);
+        _openDetailPanel(nodeId);
+        return;
+    }
+
+    // フォルダ詳細パネルを表示
+    openFolderDetailPanel(group);
+
+    // フォーカス中のフォルダを state に記録 (描画時に強調用)
+    state.focusedBubbleGroup = group;
+
+    // viewport をフォルダ円に合わせてフィットさせる
+    const targetScale = Math.min(
+        window.innerWidth / (group.r * 2.5),
+        window.innerHeight / (group.r * 2.5),
+    );
+    const clampedScale = Math.max(0.15, Math.min(2.0, targetScale));
+
+    const duration = 500;
+    const startX = _viewport.center.x;
+    const startY = _viewport.center.y;
+    const startScale = _viewport.scaled;
+    const startTime = performance.now();
+
+    const animate = () => {
+        const elapsed = performance.now() - startTime;
+        const t = Math.min(elapsed / duration, 1);
+        const ease = 1 - Math.pow(1 - t, 3);
+
+        _viewport.moveCenter(
+            startX + (group.x - startX) * ease,
+            startY + (group.y - startY) * ease,
+        );
+        _viewport.setZoom(startScale + (clampedScale - startScale) * ease, true);
+
+        if (t < 1) { requestAnimationFrame(animate); }
+    };
+    requestAnimationFrame(animate);
+
+    renderGraph();
+}
+
 // ─── グラフ描画 ──────────────────────────────────────────
 export function renderGraph() {
     const graph = state.graph;
@@ -111,7 +161,7 @@ export function renderGraph() {
     drawRingGuides(_ringContainer);
 
     if (state.layoutMode === 'balloon' && state.bubbleGroups.length > 0) {
-        drawBubbleGroups(_ringContainer);
+        drawBubbleGroups(_ringContainer, handleBubbleGroupTap);
     }
 
     // エッジ描画
@@ -123,7 +173,16 @@ export function renderGraph() {
         }
     }
 
-    const isHierarchyLayout = state.layoutMode === 'tree' || state.layoutMode === 'balloon';
+    // 分析モード用: EdgeKind ごとの色マップ
+    const analysisEdgeColorMap: Record<string, number> = {
+        'static-import':  0x66bbff,   // 青 — 通常インポート
+        'dynamic-import': 0xcc66ff,   // 紫 — 動的インポート
+        'type-import':    0x44ddaa,   // 緑 — 型インポート
+        'side-effect':    0xffaa33,   // 橙 — 副作用
+        're-export':      0xff6688,   // 桃 — 再エクスポート
+    };
+
+    const isHierarchyLayout = state.layoutMode === 'galaxy' || state.layoutMode === 'balloon';
 
     if (isHierarchyLayout && state.hierarchyEdges.length > 0) {
         for (const hEdge of state.hierarchyEdges) {
@@ -132,17 +191,14 @@ export function renderGraph() {
             if (!parentPos || !childPos) { continue; }
 
             edgeGfx.moveTo(parentPos.x, parentPos.y);
-
-            if (state.layoutMode === 'tree') {
-                const midY = (parentPos.y + childPos.y) / 2;
-                edgeGfx.quadraticCurveTo(parentPos.x, midY, childPos.x, childPos.y);
-            } else {
-                edgeGfx.lineTo(childPos.x, childPos.y);
-            }
+            edgeGfx.lineTo(childPos.x, childPos.y);
             edgeGfx.stroke({ width: 2.5, color: 0x446688, alpha: 0.5 });
         }
 
         for (const edge of graph.edges) {
+            // 非表示フィルタ
+            if (state.hiddenEdgeKinds.has(edge.kind)) { continue; }
+
             const srcPos = state.nodePositions.get(edge.source);
             const tgtPos = state.nodePositions.get(edge.target);
             if (!srcPos || !tgtPos) { continue; }
@@ -151,13 +207,25 @@ export function renderGraph() {
             const isCycleEdge = state.runeMode === 'architecture' &&
                 cycleNodeIds.has(edge.source) && cycleNodeIds.has(edge.target);
 
+            const isAnalysisH = state.runeMode === 'analysis';
+
             if (isCycleEdge) {
                 edgeGfx.moveTo(srcPos.x, srcPos.y);
                 edgeGfx.lineTo(tgtPos.x, tgtPos.y);
                 edgeGfx.stroke({ width: 3, color: 0xff3333, alpha: 0.65 });
+            } else if (isAnalysisH) {
+                // 分析モード: エッジ種別ごとに色分けした実線
+                const symCount = edge.importedSymbols.length;
+                const symNorm = Math.min(symCount / 8, 1);
+                const aColor = analysisEdgeColorMap[edge.kind] ?? 0x66ddff;
+                const aWidth = 1.5 + symNorm * 3;
+                const aAlpha = 0.4 + symNorm * 0.45;
+                edgeGfx.moveTo(srcPos.x, srcPos.y);
+                edgeGfx.lineTo(tgtPos.x, tgtPos.y);
+                edgeGfx.stroke({ width: aWidth, color: aColor, alpha: aAlpha });
             } else if (isTypeOnly) {
                 drawDashedLine(edgeGfx, srcPos.x, srcPos.y, tgtPos.x, tgtPos.y, 6, 4);
-                edgeGfx.stroke({ width: 1, color: 0x334466, alpha: 0.18 });
+                edgeGfx.stroke({ width: 1.5, color: 0x6688cc, alpha: 0.35 });
             } else {
                 edgeGfx.moveTo(srcPos.x, srcPos.y);
                 edgeGfx.lineTo(tgtPos.x, tgtPos.y);
@@ -166,6 +234,9 @@ export function renderGraph() {
         }
     } else {
         for (const edge of graph.edges) {
+            // 非表示フィルタ
+            if (state.hiddenEdgeKinds.has(edge.kind)) { continue; }
+
             const srcPos = state.nodePositions.get(edge.source);
             const tgtPos = state.nodePositions.get(edge.target);
             if (!srcPos || !tgtPos) { continue; }
@@ -173,10 +244,13 @@ export function renderGraph() {
             const srcNode = graph.nodes.find(n => n.id === edge.source);
             const isTypeOnly = edge.kind === 'type-import';
 
-            if (state.currentLOD === 'far' && isTypeOnly) { continue; }
+            if (state.currentLOD === 'far' && isTypeOnly && state.runeMode !== 'analysis') { continue; }
 
             const isCycleEdge = state.runeMode === 'architecture' &&
                 cycleNodeIds.has(edge.source) && cycleNodeIds.has(edge.target);
+
+            // 分析モード: エッジ種別ごとに色分けした実線で描画
+            const isAnalysis = state.runeMode === 'analysis';
 
             let color: number;
             let alpha: number;
@@ -190,20 +264,32 @@ export function renderGraph() {
                 color = srcNode ? getNodeColor(srcNode) : 0x334466;
                 alpha = 0.08;
                 width = 0.8;
+            } else if (isAnalysis) {
+                // 分析モード: EdgeKind で色分け、シンボル数で太さ決定
+                color = analysisEdgeColorMap[edge.kind] ?? 0x667788;
+                const symCount = edge.importedSymbols.length;
+                if (symCount > 0) {
+                    const symNorm = Math.min(1.0, symCount / 8);
+                    width = 2 + symNorm * 4;        // 2px 〜 6px
+                    alpha = 0.45 + symNorm * 0.45;  // 0.45 〜 0.9
+                } else {
+                    width = 1.2;
+                    alpha = 0.15;
+                }
             } else {
                 color = srcNode ? getNodeColor(srcNode) : 0x334466;
                 if (state.currentLOD === 'far') {
                     alpha = 0.15;
                     width = 0.8;
                 } else {
-                    alpha = isTypeOnly ? 0.15 : 0.4;
-                    width = isTypeOnly ? 1 : 2;
+                    alpha = isTypeOnly ? 0.25 : 0.4;
+                    width = isTypeOnly ? 1.5 : 2;
                 }
             }
 
-            if (isTypeOnly && state.currentLOD !== 'far') {
+            if (isTypeOnly && !isAnalysis && state.currentLOD !== 'far') {
                 drawDashedLine(edgeGfx, srcPos.x, srcPos.y, tgtPos.x, tgtPos.y, 6, 4);
-                edgeGfx.stroke({ width, color, alpha });
+                edgeGfx.stroke({ width, color: 0x6688cc, alpha });
             } else {
                 edgeGfx.moveTo(srcPos.x, srcPos.y);
                 if (state.currentLOD === 'far') {
@@ -211,7 +297,7 @@ export function renderGraph() {
                 } else {
                     const midX = (srcPos.x + tgtPos.x) / 2;
                     const midY = (srcPos.y + tgtPos.y) / 2;
-                    const bundleStrength = 0.25;
+                    const bundleStrength = isAnalysis ? 0.15 : 0.25;
                     const cpX = midX * (1 - bundleStrength);
                     const cpY = midY * (1 - bundleStrength);
                     edgeGfx.quadraticCurveTo(cpX, cpY, tgtPos.x, tgtPos.y);
@@ -289,10 +375,17 @@ function createNodeGraphics(
         } else if (state.runeMode === 'security' && node.securityWarnings && node.securityWarnings.length > 0) {
             dot.tint = 0xff8800;
             container.alpha = 1.0;
-        } else if (state.runeMode === 'refactoring' && node.gitCommitCount && node.gitCommitCount > 0) {
-            const heat = Math.min(1.0, node.gitCommitCount / 30);
-            dot.tint = heat > 0.5 ? 0xff4400 : 0xffaa00;
-            container.alpha = 0.3 + heat * 0.7;
+        } else if (state.runeMode === 'analysis') {
+            // 分析モード: データ受け渡しの多いノードを強調
+            const degree = state.nodeDegree.get(node.id) || 0;
+            if (degree > 0) {
+                const intensity = Math.min(1.0, degree / 10);
+                dot.tint = 0x66ddff;
+                container.alpha = 0.3 + intensity * 0.7;
+            } else {
+                dot.tint = 0x556677;
+                container.alpha = 0.35;
+            }
         } else if (state.runeMode !== 'default') {
             dot.tint = 0x556677;
             container.alpha = 0.35;
@@ -371,16 +464,6 @@ function createNodeGraphics(
         container.alpha = 0.35;
     }
 
-    if (state.runeMode === 'architecture' && node.directoryGroup) {
-        const dirLabel = new Text({
-            text: `📁 ${node.directoryGroup}`,
-            style: new TextStyle({ fontSize: 8, fill: 0x6688aa, fontFamily: 'Consolas, monospace' }),
-        });
-        dirLabel.anchor.set(0.5, 0.5);
-        dirLabel.position.set(0, nodeRadius + (ring !== 'global' && node.exports.length > 0 ? 42 : 30));
-        container.addChild(dirLabel);
-    }
-
     if (state.runeMode === 'security' && node.securityWarnings && node.securityWarnings.length > 0) {
         const warnRing = new Graphics();
         warnRing.circle(0, 0, nodeRadius + 10);
@@ -402,26 +485,38 @@ function createNodeGraphics(
         container.alpha = 0.35;
     }
 
-    if (state.runeMode === 'refactoring' && node.gitCommitCount && node.gitCommitCount > 0) {
-        const heat = Math.min(1.0, node.gitCommitCount / 30);
-        const heatColor = heat > 0.5 ? 0xff4400 : 0xffaa00;
-        const heatRing = new Graphics();
-        heatRing.circle(0, 0, nodeRadius + 6);
-        heatRing.fill({ color: heatColor, alpha: heat * 0.3 });
-        container.addChild(heatRing);
+    if (state.runeMode === 'analysis') {
+        // 分析モード: データ受け渡し（importedSymbols が多い）ノードを強調
+        const edges = state.graph?.edges || [];
+        const outSymCount = edges
+            .filter(e => e.source === node.id && e.importedSymbols.length > 0 && e.kind !== 'type-import')
+            .reduce((s, e) => s + e.importedSymbols.length, 0);
+        const inSymCount = edges
+            .filter(e => e.target === node.id && e.importedSymbols.length > 0 && e.kind !== 'type-import')
+            .reduce((s, e) => s + e.importedSymbols.length, 0);
+        const totalFlow = outSymCount + inSymCount;
 
-        const hotLabel = new Text({
-            text: `🔥 ${node.gitCommitCount} commits`,
-            style: new TextStyle({ fontSize: 8, fill: heatColor, fontFamily: 'Consolas, monospace' }),
-        });
-        hotLabel.anchor.set(0.5, 0.5);
-        hotLabel.position.set(0, -(nodeRadius + 14));
-        container.addChild(hotLabel);
-        container.alpha = 0.3 + heat * 0.7;
-    } else if (state.runeMode === 'refactoring') {
-        gfx.tint = 0x556677;
-        if (outerGfx) { outerGfx.tint = 0x556677; }
-        container.alpha = 0.35;
+        if (totalFlow > 0) {
+            const flowNorm = Math.min(1.0, totalFlow / 20);
+            const flowRing = new Graphics();
+            flowRing.circle(0, 0, nodeRadius + 8);
+            flowRing.fill({ color: 0x66ddff, alpha: flowNorm * 0.3 });
+            flowRing.stroke({ width: 2, color: 0x66ddff, alpha: 0.6 });
+            container.addChild(flowRing);
+
+            const flowLabel = new Text({
+                text: `⇄ ${totalFlow} symbols (↑${outSymCount} ↓${inSymCount})`,
+                style: new TextStyle({ fontSize: 8, fill: 0x66ddff, fontFamily: 'Consolas, monospace' }),
+            });
+            flowLabel.anchor.set(0.5, 0.5);
+            flowLabel.position.set(0, -(nodeRadius + 14));
+            container.addChild(flowLabel);
+            container.alpha = 0.3 + flowNorm * 0.7;
+        } else {
+            gfx.tint = 0x556677;
+            if (outerGfx) { outerGfx.tint = 0x556677; }
+            container.alpha = 0.35;
+        }
     }
 
     if (state.runeMode === 'optimization') {
@@ -516,6 +611,7 @@ function attachNodeInteraction(
     container.on('pointertap', (e: FederatedPointerEvent) => {
         const pos = state.nodePositions.get(node.id);
         if (pos) { triggerClickRipple(pos.x, pos.y, getNodeColor(node)); }
+        state.focusedBubbleGroup = null; // ノード選択時にフォルダフォーカスを解除
         _summonNode(node.id);
         _openDetailPanel(node.id);
     });
