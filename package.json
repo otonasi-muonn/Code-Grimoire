@@ -1,14 +1,39 @@
 {
   "name": "codegrimoire",
   "displayName": "CodeGrimoire",
-  "description": "Convert code into a magical circle.",
+  "description": "Convert code into a magical circle. Visualize TypeScript/JavaScript dependency graphs as beautiful magic circles.",
   "version": "0.1.0",
+  "publisher": "muonn",
+  "license": "MIT",
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/otonasi-muonn/Code-Grimoire"
+  },
+  "homepage": "https://github.com/otonasi-muonn/Code-Grimoire#readme",
+  "bugs": {
+    "url": "https://github.com/otonasi-muonn/Code-Grimoire/issues"
+  },
+  "keywords": [
+    "dependency",
+    "visualization",
+    "graph",
+    "typescript",
+    "javascript",
+    "magic circle",
+    "code analysis"
+  ],
   "engines": {
     "vscode": "^1.100.0"
   },
   "categories": [
+    "Visualization",
     "Other"
   ],
+  "galleryBanner": {
+    "color": "#1a1a2e",
+    "theme": "dark"
+  },
   "activationEvents": [
     
   ],

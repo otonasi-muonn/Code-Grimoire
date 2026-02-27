@@ -86,7 +86,7 @@
 
 ```bash
 # 1. 禁書庫の複製 (Clone)
-git clone https://github.com/your-org/Code-Grimoire.git
+git clone https://github.com/otonasi-muonn/Code-Grimoire.git
 cd Code-Grimoire
 
 # 2. ページを綴る (Install)
