@@ -2,7 +2,7 @@
   "name": "codegrimoire",
   "displayName": "CodeGrimoire",
   "description": "Convert code into a magical circle. Visualize TypeScript/JavaScript dependency graphs as beautiful magic circles.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "muonn",
   "license": "MIT",
   "icon": "icon.png",

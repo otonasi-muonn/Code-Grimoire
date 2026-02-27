@@ -13,7 +13,7 @@ const extensionConfig = {
     entryPoints: ['./src/extension.ts'],
     bundle: true,
     outfile: './out/extension.js',
-    external: ['vscode', 'typescript'],    // vscode と typescript モジュールは外部扱い
+    external: ['vscode'],    // vscode モジュールは外部扱い（typescript はバンドルする）
     format: 'cjs',
     platform: 'node',
     target: 'node18',
