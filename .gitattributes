@@ -1,0 +1,43 @@
+# ---------------------------------------
+# 基本設定（改行コードの自動正規化）
+# ---------------------------------------
+# すべてのテキストファイルを自動で判別し、リポジトリ内ではLF（UNIXスタイル）に統一する
+* text=auto eol=lf
+
+# ---------------------------------------
+# テキストファイルと差分表示の明示的指定
+# ---------------------------------------
+*.md text diff=markdown
+*.html text diff=html
+*.css text diff=css
+*.js text
+*.ts text
+*.py text
+*.go text
+*.json text
+*.yml text
+*.yaml text
+*.csv text
+
+# ---------------------------------------
+# バイナリファイルの指定（改行コード変換を無効化）
+# ---------------------------------------
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.tar.gz binary
+
+# ---------------------------------------
+# GitHubの言語統計（Linguist）のカスタマイズ
+# ---------------------------------------
+# 以下のフォルダ内のファイルは、GitHubのリポジトリの「使用言語の割合（%）」に含めない
+node_modules/* linguist-vendored
+vendor/* linguist-vendored
+dist/* linguist-generated
+build/* linguist-generated
+.vscode/* linguist-vendored

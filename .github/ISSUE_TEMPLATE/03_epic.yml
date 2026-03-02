@@ -1,0 +1,34 @@
+name: 🚀 エピック（大型機能）
+description: 複数のタスクを束ねる親Issueを作成し、全体の進捗を管理する
+title: "[Epic]: "
+labels: ["epic"]
+body:
+  - type: markdown
+    attributes:
+      value: "このエピックに関連するタスクを洗い出し、全体像を管理しましょう！"
+  
+  - type: textarea
+    id: description
+    attributes:
+      label: 背景と目的
+      description: なぜこの大型機能を実装するのか、何を達成したいのか（ゴール）を簡潔に書いてください。
+    validations:
+      required: true
+      
+  - type: textarea
+    id: task-list
+    attributes:
+      label: タスク一覧（子Issue）
+      description: このエピックを完了するために必要なタスクをチェックリスト形式で列挙してください。タスクを別のIssueとして作成した後、ここに `#123` のようにIssue番号を追記してリンクさせると進捗管理が劇的に楽になります。
+      value: |
+        - [ ] #1 タスク1
+        - [ ] #2 タスク2
+        - [ ] #3 タスク3
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: 備考・参考資料
+      description: 仕様のメモや、参考になるドキュメント、デザインのURLなどがあれば記入してください。

@@ -1,0 +1,41 @@
+name: 🐛 バグ報告
+description: プログラムの不具合や予期しない動作を報告する
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "バグのご報告ありがとうございます！修正に役立てるため、以下の情報をご記入ください。"
+  
+  - type: textarea
+    id: description
+    attributes:
+      label: バグの概要
+      description: 何が起こったのか、簡潔に教えてください。
+    validations:
+      required: true
+      
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 再現手順
+      description: バグを再現するための具体的な手順を書いてください。
+      value: |
+        1. '...' にアクセスする
+        2. '...' をクリックする
+        3. エラーが発生する
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 実行環境
+      description: バグが発生した環境の詳細を教えてください。不要な項目は消して構いません。
+      value: |
+        - OS: 
+        - 言語・ツール: 
+        - フレームワーク: 
+        - ブラウザ (Webの場合): 
+    validations:
+      required: true

@@ -1,0 +1,29 @@
+# EditorConfig is awesome: https://EditorConfig.org
+
+# これが最上位のディレクトリであることを示します
+root = true
+
+# すべてのファイルに対するデフォルト設定
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Python: PEP8の標準に合わせてスペース4文字にする
+[*.py]
+indent_size = 4
+
+# Go: Goの標準に合わせてタブインデントにする
+[*.go]
+indent_style = tab
+
+# Makefileはインデントにタブを使用する必要があるため上書き
+[Makefile]
+indent_style = tab
+
+# Markdownファイルは文末のスペース2つで改行を意味するため、空白削除を無効化
+[*.md]
+trim_trailing_whitespace = false

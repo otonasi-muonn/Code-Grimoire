@@ -1,0 +1,5 @@
+blank_issues_enabled: false # 「空のIssueを開く」ボタンを非表示にする
+contact_links:
+  - name: 🔒 セキュリティの報告
+    about: セキュリティ上の脆弱性を見つけた場合は、公開Issueではなくこちらからご報告ください。
+    url: https://x.com/otonasi_muonn

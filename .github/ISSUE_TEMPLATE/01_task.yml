@@ -1,0 +1,36 @@
+name: 📝 タスク・備忘録
+description: バグや機能要望以外の作業、調査、リファクタリングなどを管理する
+title: "[Task]: "
+labels: ["task"]
+body:
+  - type: markdown
+    attributes:
+      value: "作業内容と完了条件を整理してタスクを管理しましょう！"
+  
+  - type: textarea
+    id: description
+    attributes:
+      label: タスクの概要
+      description: このタスクで何を行うのか、背景や目的を簡潔に説明してください。
+      placeholder: "例：ログイン画面のコンポーネントを共通化してリファクタリングする"
+    validations:
+      required: true
+      
+  - type: textarea
+    id: definition-of-done
+    attributes:
+      label: 完了の定義（Doneの条件）
+      description: どのような状態になればこのタスクは完了ですか？チェックリスト形式で書くのがおすすめです。
+      value: |
+        - [ ] 
+        - [ ] 
+        - [ ] 
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: 備考・参考リンク
+      description: 作業にあたって参考になるドキュメントのURLや、調査のメモなどがあれば記入してください。
+      placeholder: "https://..."

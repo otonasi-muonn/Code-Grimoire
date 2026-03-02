@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # GitHub Actions自体のバージョンアップ
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "sunday"
+      
+  # 例：Node.js (npm) のパッケージ管理（不要なら消すか、"pip"などに変えてください）
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "sunday"

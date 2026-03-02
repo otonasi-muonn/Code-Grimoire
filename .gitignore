@@ -1,5 +1,67 @@
-out
-dist
-node_modules
-.vscode-test/
-*.vsix
+# =======================================
+# OS 固有のファイル
+# =======================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# =======================================
+# エディタ・IDE の設定ファイル
+# =======================================
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.swp
+*.swo
+
+# =======================================
+# 依存関係・パッケージ（言語汎用）
+# =======================================
+node_modules/
+vendor/
+.venv/
+venv/
+env/
+
+# =======================================
+# ビルド出力・キャッシュ・ログファイル
+# =======================================
+dist/
+build/
+target/
+out/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ipynb_checkpoints/
+
+# =======================================
+# 環境変数・機密情報（超重要🚨）
+# =======================================
+.env
+.env.*
+!.env.example
+!.env.template
+secrets.json
+config.local.json
+
+# =======================================
+# データベース・ストレージ
+# =======================================
+*.sqlite
+*.sqlite3
+*.db
+dump.rdb

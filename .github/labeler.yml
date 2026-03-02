@@ -1,0 +1,7 @@
+documentation:
+  - changed-files:
+      - any-glob-to-any-file: ['docs/**/*', 'README.md']
+
+bug:
+  - changed-files:
+      - any-glob-to-any-file: ['**/*bug*', '**/*fix*']

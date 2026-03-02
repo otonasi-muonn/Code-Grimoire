@@ -1,0 +1,19 @@
+name: Greetings
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+jobs:
+  greeting:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/first-interaction@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          issue-message: '初めてのIssue作成ありがとうございます！確認まで少々お待ちください。'
+          pr-message: '初めてのPull Requestありがとうございます！レビューまで少々お待ちください。'

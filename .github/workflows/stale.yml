@@ -1,0 +1,23 @@
+name: Close inactive issues
+on:
+  schedule:
+    - cron: "30 1 * * *" # 毎日深夜1時30分にチェック
+  workflow_dispatch:
+
+jobs:
+  close-issues:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/stale@v10
+        with:
+          days-before-issue-stale: 60
+          days-before-pr-stale: 60
+          days-before-issue-close: 7
+          days-before-pr-close: 7
+          stale-issue-message: 'このIssueは長期間動きがないため、非アクティブ状態になりました。あと7日で自動的にクローズされます。'
+          stale-pr-message: 'このPRは長期間動きがないため、非アクティブ状態になりました。あと7日で自動的にクローズされます。'
+          stale-issue-label: 'stale'
+          stale-pr-label: 'stale'

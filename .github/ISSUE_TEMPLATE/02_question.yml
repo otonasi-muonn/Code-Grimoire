@@ -1,0 +1,39 @@
+name: ❓ 質問・サポート
+description: 使い方に関する質問や、発生しているエラーについてのサポートを依頼する
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: "ご質問ありがとうございます！状況を把握しやすくするため、以下の情報をご記入ください。"
+  
+  - type: textarea
+    id: question
+    attributes:
+      label: 質問の内容
+      description: 何について知りたいですか？どのようなことでお困りですか？
+      placeholder: "例：〇〇の機能の使い方について教えてください / 〇〇を実行するとエラーになってしまいます"
+    validations:
+      required: true
+      
+  - type: textarea
+    id: tried
+    attributes:
+      label: 試したこと・調べたこと
+      description: 問題を解決するために、すでに試した手順や調べたことがあれば教えてください。
+      placeholder: "例：公式ドキュメントの〇〇のページを読み、コードを〇〇のように書き換えましたが、解決しませんでした。"
+    validations:
+      required: true
+
+  - type: textarea
+    id: error-logs
+    attributes:
+      label: エラーメッセージやログ（該当する場合）
+      description: エラーが出ている場合は、ターミナルやコンソールに出力されたメッセージをそのまま貼り付けてください。
+      render: shell
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: 備考・補足情報
+      description: その他、解決の手がかりになりそうな情報があればご記入ください（スクリーンショットなども可）。
