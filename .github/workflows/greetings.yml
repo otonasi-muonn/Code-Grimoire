@@ -14,6 +14,6 @@ jobs:
     steps:
       - uses: actions/first-interaction@v3
         with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          issue-message: '初めてのIssue作成ありがとうございます！確認まで少々お待ちください。'
-          pr-message: '初めてのPull Requestありがとうございます！レビューまで少々お待ちください。'
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          issue_message: '初めてのIssue作成ありがとうございます！確認まで少々お待ちください。'
+          pr_message: '初めてのPull Requestありがとうございます！レビューまで少々お待ちください。'
