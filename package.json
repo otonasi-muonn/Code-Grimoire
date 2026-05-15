@@ -2,7 +2,7 @@
   "name": "codegrimoire",
   "displayName": "CodeGrimoire",
   "description": "Convert code into a magical circle. Visualize TypeScript/JavaScript dependency graphs as beautiful magic circles.",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "publisher": "muonn",
   "license": "MIT",
   "icon": "icon.png",
@@ -21,7 +21,14 @@
     "typescript",
     "javascript",
     "magic circle",
-    "code analysis"
+    "code analysis",
+    "dependency-visualization",
+    "vscode-extension",
+    "dependency-graph",
+    "typescript-compiler-api",
+    "tarjan-scc",
+    "circular-dependency",
+    "code-structure"
   ],
   "engines": {
     "vscode": "^1.100.0"
@@ -43,8 +50,36 @@
       {
         "command": "codegrimoire.openGrimoire",
         "title": "CodeGrimoire: Open Grimoire"
+      },
+      {
+        "command": "codegrimoire.loadDemo",
+        "title": "CodeGrimoire: Load Demo Project"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "CodeGrimoire",
+      "properties": {
+        "codegrimoire.demoPresets": {
+          "type": "array",
+          "default": [],
+          "description": "Demo project paths for quick switching at exhibitions and demos. Configure name and absolute path for each preset.",
+          "items": {
+            "type": "object",
+            "required": ["name", "path"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Display name shown in the QuickPick list."
+              },
+              "path": {
+                "type": "string",
+                "description": "Absolute path to the project folder to open."
+              }
+            }
+          }
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "node esbuild.js --production",

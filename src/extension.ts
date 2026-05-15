@@ -12,6 +12,9 @@ import type {
 } from './shared/types.js';
 import * as fs from 'fs';
 
+/** v2 改修 (T-08): オンボーディングツアー表示済みフラグの globalState キー */
+const ONBOARDING_SHOWN_KEY = 'codegrimoire.onboardingShown.v1';
+
 export function activate(context: vscode.ExtensionContext) {
     // ─── ASCII Art Banner ───────────────────────────────
     console.log(`
@@ -50,9 +53,16 @@ export function activate(context: vscode.ExtensionContext) {
             const packageJsonPath = path.join(root, 'package.json');
             let projectName = path.basename(root);
             try {
-                const pkg = require(packageJsonPath);
+                // v2 改修: require() は Node のモジュールキャッシュに残るため、
+                // loadDemo で別フォルダに切り替えた後も古い package.json が返り続ける問題があった。
+                // fs.readFileSync + JSON.parse で毎回読み直す。
+                const pkgRaw = fs.readFileSync(packageJsonPath, 'utf-8');
+                const pkg = JSON.parse(pkgRaw);
                 projectName = pkg.displayName || pkg.name || projectName;
             } catch { /* package.json が無い場合は無視 */ }
+
+            // v2 改修 (T-08): オンボーディング表示済みフラグを同梱
+            const onboardingShown = context.globalState.get<boolean>(ONBOARDING_SHOWN_KEY, false);
 
             // ファイル数の簡易カウント
             sendMessage({
@@ -62,6 +72,7 @@ export function activate(context: vscode.ExtensionContext) {
                     rootPath: root,
                     fileCount: 0, // 後で更新
                     language: vscode.env.language,
+                    onboardingShown,
                 },
             });
 
@@ -69,7 +80,7 @@ export function activate(context: vscode.ExtensionContext) {
             const graph = analyzeWorkspace(root);
             cachedGraph = graph;
 
-            // ファイル数を反映して再送
+            // ファイル数を反映して再送 (onboardingShown は同じ値を維持)
             sendMessage({
                 type: 'INSTANT_STRUCTURE',
                 payload: {
@@ -77,6 +88,7 @@ export function activate(context: vscode.ExtensionContext) {
                     rootPath: root,
                     fileCount: graph.nodes.length,
                     language: vscode.env.language,
+                    onboardingShown,
                 },
             });
 
@@ -176,6 +188,11 @@ export function activate(context: vscode.ExtensionContext) {
                     console.log('[Code Grimoire] Rune mode:', message.payload.mode);
                     break;
                 }
+                case 'ONBOARDING_DISMISS': {
+                    // v2 改修 (T-08): オンボーディング完了/スキップを globalState に永続化
+                    await context.globalState.update(ONBOARDING_SHOWN_KEY, true);
+                    break;
+                }
                 case 'CODE_PEEK_REQUEST': {
                     const { filePath, maxLines } = message.payload;
                     const lines = maxLines || 50;
@@ -227,6 +244,70 @@ export function activate(context: vscode.ExtensionContext) {
     });
 
     context.subscriptions.push(disposable);
+
+    // ─── コマンド登録: デモプロジェクト切替 ─────────────────
+    // 展示・デモ用途。settings.json の `codegrimoire.demoPresets` で
+    // 事前登録した複数プロジェクトを QuickPick で即時切替する。
+    interface DemoPreset {
+        name: string;
+        path: string;
+    }
+    const loadDemoDisposable = vscode.commands.registerCommand('codegrimoire.loadDemo', async () => {
+        const presets = vscode.workspace.getConfiguration('codegrimoire')
+            .get<DemoPreset[]>('demoPresets', []);
+
+        if (!presets || presets.length === 0) {
+            vscode.window.showInformationMessage(
+                'No demo presets configured. Add them in settings.json under "codegrimoire.demoPresets".'
+            );
+            return;
+        }
+
+        const items = presets.map(p => ({
+            label: p.name,
+            description: p.path,
+            preset: p,
+        }));
+
+        const choice = await vscode.window.showQuickPick(items, {
+            placeHolder: 'Select demo project to open',
+            matchOnDescription: true,
+        });
+
+        if (!choice) {
+            return; // ユーザーキャンセル
+        }
+
+        // パスの存在確認（展示中の不在パス事故を防ぐ）
+        try {
+            const stat = fs.statSync(choice.preset.path);
+            if (!stat.isDirectory()) {
+                vscode.window.showErrorMessage(
+                    `Demo preset path is not a directory: ${choice.preset.path}`
+                );
+                return;
+            }
+        } catch (err) {
+            vscode.window.showErrorMessage(
+                `Demo preset path does not exist: ${choice.preset.path}`
+            );
+            return;
+        }
+
+        // v2 改修 (レビュー指摘): フォルダ切替前に既存パネルを明示的に dispose する。
+        // openFolder が拡張ホストを再起動しない場合でも、旧グラフが残らないようクリーンアップ。
+        if (panel) {
+            panel.dispose();
+        }
+
+        // 現ウィンドウで開く（デモ中のウィンドウ切替を回避）
+        await vscode.commands.executeCommand(
+            'vscode.openFolder',
+            vscode.Uri.file(choice.preset.path),
+            { forceNewWindow: false }
+        );
+    });
+    context.subscriptions.push(loadDemoDisposable);
 }
 
 export function deactivate() {}

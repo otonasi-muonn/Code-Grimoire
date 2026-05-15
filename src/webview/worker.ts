@@ -449,9 +449,9 @@ function calculateGalaxyLayout(): Map<string, { x: number; y: number }> {
 /** Balloon レイアウト: パック円充填 (Bubble) — ディレクトリグループ円付き */
 function calculateBalloonLayout(dirTree: DirTreeNode): Map<string, { x: number; y: number }> {
     // サイズモードに応じて value を再計算
+    const nodeMap = new Map<string, WorkerNode>();
+    for (const n of nodes) { nodeMap.set(n.id, n); }
     if (currentBubbleSizeMode === 'fileSize') {
-        const nodeMap = new Map<string, WorkerNode>();
-        for (const n of nodes) { nodeMap.set(n.id, n); }
         const assignFileSize = (d: DirTreeNode) => {
             if (d.nodeId) {
                 const workerNode = nodeMap.get(d.nodeId);
@@ -492,6 +492,35 @@ function calculateBalloonLayout(dirTree: DirTreeNode): Map<string, { x: number; 
                 if (n.children) { for (const c of n.children) { collectLeaves(c); } }
             };
             collectLeaves(d);
+
+            // ─── v2 改修 (T-06): ヒートマップ用メトリクス計算 ──
+            const childSet = new Set(childIds);
+            let internalDeps = 0;
+            let externalDeps = 0;
+            for (const e of edges) {
+                const srcIn = childSet.has(e.source);
+                const tgtIn = childSet.has(e.target);
+                if (srcIn && tgtIn) {
+                    internalDeps++;
+                } else if (srcIn || tgtIn) {
+                    externalDeps++;
+                }
+            }
+            const totalDeps = internalDeps + externalDeps;
+            // 凝集度: 全体依存数 = 0 のフォルダは独立完結とみなして 1.0
+            const cohesion = totalDeps === 0 ? 1.0 : internalDeps / totalDeps;
+
+            let sumLines = 0;
+            let cycleCount = 0;
+            for (const cid of childIds) {
+                const wn = nodeMap.get(cid);
+                if (wn) {
+                    sumLines += wn.lineCount;
+                    if (wn.inCycle) { cycleCount++; }
+                }
+            }
+            const avgLineCount = childIds.length > 0 ? sumLines / childIds.length : 0;
+
             groups.push({
                 label: d.data.name,
                 x: dx,
@@ -499,6 +528,9 @@ function calculateBalloonLayout(dirTree: DirTreeNode): Map<string, { x: number; 
                 r: dr,
                 depth: d.depth,
                 childNodeIds: childIds,
+                cohesion,
+                avgLineCount,
+                cycleCount,
             });
         }
     });

@@ -1,6 +1,6 @@
 // ─── Rune UI + Layout UI (ヘッダーバー) ─────────────────
 import { Graphics, Text, TextStyle, Container } from 'pixi.js';
-import type { RuneMode, LayoutMode, BubbleSizeMode } from '../../shared/types.js';
+import type { RuneMode, LayoutMode, BubbleSizeMode, BubbleMetric } from '../../shared/types.js';
 import { state } from '../core/state.js';
 import { sendMessage } from '../core/vscode-api.js';
 import { t, type TranslationKey } from '../core/i18n.js';
@@ -190,6 +190,34 @@ export function refreshRuneUI() {
                 _startParticleLoading();
                 _updateStatusText();
                 refreshRuneUI();
+            });
+            toolbarContainer.addChild(bc);
+            xOffset += TOOLBAR_BTN_SIZE + TOOLBAR_GAP;
+        }
+
+        // ─── v2 改修 (T-06): メトリクス切替 (Balloon 時のみ) ───
+        const sep1c = new Graphics();
+        sep1c.moveTo(xOffset + 2, 4);
+        sep1c.lineTo(xOffset + 2, TOOLBAR_BTN_SIZE - 4);
+        sep1c.stroke({ width: 1, color: 0x334466, alpha: 0.5 });
+        toolbarContainer.addChild(sep1c);
+        xOffset += 10;
+
+        const BUBBLE_METRIC_BUTTONS: { mode: BubbleMetric; translationKey: TranslationKey; icon: string; color: number }[] = [
+            { mode: 'cohesion', translationKey: 'bubble.metric.cohesion', icon: '🧬', color: 0x66ddaa },
+            { mode: 'avgLines', translationKey: 'bubble.metric.avgLines', icon: '📐', color: 0xcc99dd },
+            { mode: 'cycles',   translationKey: 'bubble.metric.cycles',   icon: '⟳',  color: 0xff8866 },
+        ];
+
+        for (const mb of BUBBLE_METRIC_BUTTONS) {
+            const isActive = state.bubbleMetric === mb.mode;
+            const bc = createToolbarButton(mb.icon, mb.color, isActive, t(mb.translationKey), xOffset);
+            bc.on('pointertap', () => {
+                if (state.bubbleMetric === mb.mode) { return; }
+                state.bubbleMetric = mb.mode;
+                // メトリクス切替は再レイアウト不要、再描画のみで反映
+                refreshRuneUI();
+                _renderGraph();
             });
             toolbarContainer.addChild(bc);
             xOffset += TOOLBAR_BTN_SIZE + TOOLBAR_GAP;

@@ -73,6 +73,39 @@ export function drawRingGuides(ringContainer: Container) {
     ringContainer.addChild(gfx);
 }
 
+/**
+ * v2 改修 (T-06): BubbleMetric に応じてフォルダ円の塗り色を返す。
+ * フォーカス枠線は常に最優先表示するため、本関数は内部塗り色のみ決定する。
+ */
+function getMetricFillColor(group: BubbleGroup): number | null {
+    // メトリクス未計算 (cohesion 等が undefined) なら null を返してデフォルト色を維持
+    switch (state.bubbleMetric) {
+        case 'cohesion': {
+            const c = group.cohesion;
+            if (c === undefined) { return null; }
+            if (c >= 0.8) { return 0x44dd66; } // 高凝集 = 緑
+            if (c >= 0.5) { return 0xddcc44; } // 中 = 黄
+            return 0xdd4444;                    // 低凝集 = 赤
+        }
+        case 'avgLines': {
+            const a = group.avgLineCount;
+            if (a === undefined) { return null; }
+            // 平均行数: 小さいほど良い (200 行以下緑 / 500 行以下黄 / 超 赤)
+            if (a < 200) { return 0x44dd66; }
+            if (a < 500) { return 0xddcc44; }
+            return 0xdd4444;
+        }
+        case 'cycles': {
+            const cy = group.cycleCount;
+            if (cy === undefined) { return null; }
+            if (cy === 0) { return 0x44dd66; }
+            if (cy <= 2) { return 0xddcc44; }
+            return 0xdd4444;
+        }
+    }
+    return null;
+}
+
 /** Bubble レイアウト時のディレクトリグループ円を描画 */
 export function drawBubbleGroups(
     ringContainer: Container,
@@ -96,8 +129,10 @@ export function drawBubbleGroups(
             ? Math.max(0.4, 0.7 - group.depth * 0.04)
             : Math.max(0.08, 0.25 - group.depth * 0.04);
         const strokeWidth = isFocused ? 3 : 1;
-        const strokeColor = isFocused ? 0x66ddff : 0xdde4f0;
-        const fillColor = isFocused ? 0x1a3366 : 0x1a2855;
+        // v2 改修 (T-06): フォーカス枠線は最優先で青、非フォーカス時はメトリクス色を縁取りに反映
+        const metricColor = !isFocused ? getMetricFillColor(group) : null;
+        const strokeColor = isFocused ? 0x66ddff : (metricColor ?? 0xdde4f0);
+        const fillColor = isFocused ? 0x1a3366 : (metricColor ?? 0x1a2855);
 
         // グループ円をインタラクティブな Container にする
         const groupContainer = new Container();

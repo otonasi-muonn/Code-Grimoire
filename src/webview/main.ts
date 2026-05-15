@@ -81,6 +81,7 @@ import {
     toggleHelp,
     helpVisible,
 } from './ui/help.js';
+import { initOnboarding } from './ui/onboarding.js';
 
 // ─── Summoning (フォーカス切り替え) ──────────────────────
 function summonNode(nodeId: string) {
@@ -151,6 +152,9 @@ window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessag
                 setCurrentLang(msg.payload.language.startsWith('ja') ? 'ja' : 'en');
                 applyLocalization(refreshRuneUI);
             }
+            // v2 改修 (T-08): オンボーディングツアーは INSTANT_STRUCTURE 受信時にのみ初期化。
+            // payload に onboardingShown が含まれていれば、その値で表示有無を判定する。
+            initOnboarding(msg.payload.onboardingShown === true);
             updateStatusText();
             break;
         case 'GRAPH_DATA':

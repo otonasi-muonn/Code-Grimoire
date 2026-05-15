@@ -443,6 +443,30 @@ function createNodeGraphics(
         nextBadgeY += 12;
     }
 
+    // ─── v2 改修 (T-03): 巨大ファイル警告 — 全 Rune モード共通 ───
+    // Rune モードの装飾より外側 (+12 / +14) に描画して干渉を避ける。
+    // 色 + 形状 (リング太さ) + ラベルの三重符号化で色弱対応 (P6)。
+    if (node.hugeFileLevel === 'warning') {
+        const hugeWarnRing = new Graphics();
+        hugeWarnRing.circle(0, 0, nodeRadius + 12);
+        hugeWarnRing.stroke({ width: 2, color: 0xffaa33, alpha: 0.7 });
+        container.addChild(hugeWarnRing);
+    } else if (node.hugeFileLevel === 'critical') {
+        const hugeCriticalRing = new Graphics();
+        hugeCriticalRing.circle(0, 0, nodeRadius + 14);
+        hugeCriticalRing.stroke({ width: 3, color: 0xff3333, alpha: 0.9 });
+        container.addChild(hugeCriticalRing);
+
+        // 行数ラベル: 色だけに頼らず文字でも危険を伝える (色弱対応)
+        const xxlLabel = new Text({
+            text: `⚠ XXXL ${node.lineCount}L`,
+            style: new TextStyle({ fontSize: 9, fill: 0xff7777, fontFamily: 'Consolas, monospace' }),
+        });
+        xxlLabel.anchor.set(0.5, 0.5);
+        xxlLabel.position.set(0, -(nodeRadius + 24));
+        container.addChild(xxlLabel);
+    }
+
     // ─── Rune モード別オーバーレイ ───────────────────────
     if (state.runeMode === 'architecture' && node.inCycle) {
         const cycleRing = new Graphics();
@@ -450,9 +474,24 @@ function createNodeGraphics(
         cycleRing.stroke({ width: 2, color: 0xff3333, alpha: 0.9 });
         container.addChild(cycleRing);
 
+        // v2 改修 (T-05): hotspot な cycle ノードは二重リング + 🔥 アイコン
+        // commit 数 75 パーセンタイル以上のノードを「修正優先度上位」として強調する。
+        if (node.isHotSpot) {
+            const hotRing = new Graphics();
+            hotRing.circle(0, 0, nodeRadius + 16);
+            hotRing.stroke({ width: 2, color: 0xff8800, alpha: 0.8 });
+            container.addChild(hotRing);
+        }
+
         const cycleLabel = new Text({
-            text: '⟳ cycle',
-            style: new TextStyle({ fontSize: 9, fill: 0xff5555, fontFamily: 'Consolas, monospace' }),
+            text: node.isHotSpot
+                ? `⟳ cycle 🔥 ${node.gitCommitCount ?? 0}c`
+                : '⟳ cycle',
+            style: new TextStyle({
+                fontSize: 9,
+                fill: node.isHotSpot ? 0xffaa33 : 0xff5555,
+                fontFamily: 'Consolas, monospace',
+            }),
         });
         cycleLabel.anchor.set(0.5, 0.5);
         cycleLabel.position.set(0, -(nodeRadius + 14));
@@ -465,15 +504,45 @@ function createNodeGraphics(
     }
 
     if (state.runeMode === 'security' && node.securityWarnings && node.securityWarnings.length > 0) {
+        // v2 改修 (T-04): severity 階層に応じてリング色・太さ・アイコンを変える
+        // 色だけでなく形状（リング太さ）とアイコンで二重符号化し、色弱対応 (P6)。
+        const hasCritical = node.securityWarnings.some(w => w.severity === 'critical');
+        const hasWarning = node.securityWarnings.some(w => w.severity === 'warning');
+
+        let ringColor: number;
+        let ringWidth: number;
+        let labelColor: number;
+        let icon: string;
+
+        if (hasCritical) {
+            // 危険関数 / innerHTML 代入等: 即時危険
+            ringColor = 0xff3333;
+            ringWidth = 3;
+            labelColor = 0xff7777;
+            icon = '⛔';
+        } else if (hasWarning) {
+            // ユーザー入力源等: 注意
+            ringColor = 0xff8800;
+            ringWidth = 3;
+            labelColor = 0xffaa33;
+            icon = '⚠';
+        } else {
+            // info レベルのみ (process.env / fs.readFile 等): 控えめ
+            ringColor = 0xffdd44;
+            ringWidth = 2;
+            labelColor = 0xffee66;
+            icon = 'ⓘ';
+        }
+
         const warnRing = new Graphics();
         warnRing.circle(0, 0, nodeRadius + 10);
-        warnRing.stroke({ width: 3, color: 0xff8800, alpha: 0.9 });
+        warnRing.stroke({ width: ringWidth, color: ringColor, alpha: 0.9 });
         container.addChild(warnRing);
 
         const warningCount = node.securityWarnings.length;
         const warnLabel = new Text({
-            text: `⚠ ${warningCount} warning${warningCount > 1 ? 's' : ''}`,
-            style: new TextStyle({ fontSize: 9, fill: 0xffaa33, fontFamily: 'Consolas, monospace' }),
+            text: `${icon} ${warningCount} ${warningCount > 1 ? 'warnings' : 'warning'}`,
+            style: new TextStyle({ fontSize: 9, fill: labelColor, fontFamily: 'Consolas, monospace' }),
         });
         warnLabel.anchor.set(0.5, 0.5);
         warnLabel.position.set(0, -(nodeRadius + 14));

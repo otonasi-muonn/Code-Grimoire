@@ -429,6 +429,74 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             padding: 8px;
             font-style: italic;
         }
+        /* ─── Onboarding Tooltip (v2: T-08) ─────────────── */
+        /* WCAG 2.2 コントラスト比: 背景 rgba(10,14,32,0.96) vs 文字 #d8e0f4 = 13.4:1 (AAA) */
+        #onboarding-tooltip {
+            position: fixed;
+            right: 20px;
+            bottom: 80px;
+            width: 320px;
+            padding: 16px 18px 14px;
+            background: rgba(10, 14, 32, 0.96);
+            border: 1px solid rgba(100, 150, 255, 0.35);
+            border-radius: 10px;
+            color: #d8e0f4;
+            font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+            font-size: 13px;
+            line-height: 1.6;
+            z-index: 1100;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(16px);
+            display: none;
+        }
+        #onboarding-tooltip::before {
+            content: '✦ ツアー';
+            display: block;
+            font-size: 11px;
+            color: rgba(100, 180, 255, 0.7);
+            letter-spacing: 1.2px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+        #ob-text {
+            margin-bottom: 14px;
+            color: #d8e0f4;
+        }
+        #ob-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        #ob-progress {
+            font-size: 11px;
+            color: rgba(180, 200, 240, 0.6);
+            font-family: Consolas, monospace;
+        }
+        #ob-skip, #ob-next {
+            background: rgba(100, 150, 255, 0.12);
+            border: 1px solid rgba(100, 150, 255, 0.3);
+            border-radius: 5px;
+            color: #d8e0f4;
+            font-size: 12px;
+            padding: 5px 12px;
+            cursor: pointer;
+            transition: background 0.15s, border-color 0.15s;
+            margin-left: 6px;
+            font-family: inherit;
+        }
+        #ob-skip:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+        #ob-next {
+            background: rgba(100, 200, 255, 0.2);
+            border-color: rgba(100, 200, 255, 0.5);
+            color: #fff;
+            font-weight: 600;
+        }
+        #ob-next:hover {
+            background: rgba(100, 200, 255, 0.32);
+        }
     </style>
 </head>
 <body>
@@ -454,6 +522,17 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
     <div id="help-overlay">
         <span class="help-close" id="help-close">✕</span>
         <div class="help-card" id="help-card"></div>
+    </div>
+    <!-- Onboarding Tooltip (v2: T-08) — 初回起動時のみ表示 -->
+    <div id="onboarding-tooltip">
+        <div id="ob-text"></div>
+        <div id="ob-footer">
+            <span id="ob-progress">1 / 5</span>
+            <div>
+                <button id="ob-skip">スキップ</button>
+                <button id="ob-next">次へ →</button>
+            </div>
+        </div>
     </div>
     <script nonce="${nonce}" data-worker-uri="${workerUri}" src="${scriptUri}"></script>
 </body>

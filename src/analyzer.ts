@@ -13,9 +13,23 @@ import type {
     NodeKind,
     EdgeKind,
     SecurityWarning,
+    SecurityWarningKind,
+    SecuritySeverity,
     CircularDependency,
     GitHotspot,
 } from './shared/types.js';
+
+// ─── v2 改修: 巨大ファイル警告の閾値 (T-03) ─────────────
+/** 警告レベル: 500 行以上で `warning` */
+const HUGE_FILE_LINE_THRESHOLD = 500;
+/** 危険レベル: 1000 行以上で `critical` */
+const MASSIVE_FILE_LINE_THRESHOLD = 1000;
+
+// ─── v2 改修: Git Hotspot パーセンタイル設定 (T-05) ─────
+/** Hotspot 判定のパーセンタイル (0.0-1.0)。0.75 = 上位 25% */
+const HOTSPOT_PERCENTILE = 0.75;
+/** パーセンタイル算出を有効にする最小ノード数 (下限ガード) */
+const HOTSPOT_MIN_SAMPLE = 5;
 
 // ─── Public API ─────────────────────────────────────────
 
@@ -402,47 +416,96 @@ function getImportEdgeKind(node: ts.ImportDeclaration): EdgeKind {
 
 // ─── Phase 3: セキュリティ警告検出 ──────────────────────
 
-/** 危険なパターンを検出する */
-const DANGEROUS_FUNCTIONS: Record<string, SecurityWarning['kind']> = {
-    'eval': 'eval-usage',
-    'Function': 'eval-usage',
-    'dangerouslySetInnerHTML': 'innerHTML',
-    'innerHTML': 'innerHTML',
-    'outerHTML': 'innerHTML',
-    'document.write': 'dangerous-function',
-    'document.writeln': 'dangerous-function',
-};
-
-/** Taint ソースとなる API — PropertyAccess チェーンで検出 */
-const TAINT_PROPERTY_CHAINS: Array<{ chain: string[]; label: string }> = [
-    { chain: ['req', 'body'],     label: 'req.body' },
-    { chain: ['req', 'query'],    label: 'req.query' },
-    { chain: ['req', 'params'],   label: 'req.params' },
-    { chain: ['req', 'headers'],  label: 'req.headers' },
-    { chain: ['location', 'search'], label: 'location.search' },
-    { chain: ['location', 'hash'],   label: 'location.hash' },
-    { chain: ['location', 'href'],   label: 'location.href' },
-    { chain: ['document', 'cookie'], label: 'document.cookie' },
-    { chain: ['window', 'name'],     label: 'window.name' },
+/**
+ * 危険なパターンを検出する。v2 改修 (T-04): severity を必須化。
+ * - eval / Function / innerHTML 系は critical (即時危険)
+ * - document.write は critical (動的 HTML 注入)
+ */
+const DANGEROUS_FUNCTIONS: Array<{ pattern: string; kind: SecurityWarningKind; severity: SecuritySeverity }> = [
+    { pattern: 'eval',                    kind: 'eval-usage',         severity: 'critical' },
+    { pattern: 'Function',                kind: 'eval-usage',         severity: 'critical' },
+    { pattern: 'dangerouslySetInnerHTML', kind: 'innerHTML',          severity: 'critical' },
+    { pattern: 'innerHTML',               kind: 'innerHTML',          severity: 'critical' },
+    { pattern: 'outerHTML',               kind: 'innerHTML',          severity: 'critical' },
+    { pattern: 'document.write',          kind: 'dangerous-function', severity: 'critical' },
+    { pattern: 'document.writeln',        kind: 'dangerous-function', severity: 'critical' },
 ];
 
-/** Taint ソースとなる単独 Identifier */
-const TAINT_IDENTIFIERS = new Set([
-    'localStorage', 'sessionStorage', 'postMessage',
-    'URLSearchParams', 'FormData',
+/**
+ * Taint ソースとなる API — PropertyAccess チェーンで検出。
+ * v2 改修 (T-04): severity を付与。process.env / process.argv は info レベルで誤検出を抑制。
+ */
+const TAINT_PROPERTY_CHAINS: Array<{ chain: string[]; label: string; severity: SecuritySeverity }> = [
+    { chain: ['req', 'body'],        label: 'req.body',        severity: 'warning' },
+    { chain: ['req', 'query'],       label: 'req.query',       severity: 'warning' },
+    { chain: ['req', 'params'],      label: 'req.params',      severity: 'warning' },
+    { chain: ['req', 'headers'],     label: 'req.headers',     severity: 'warning' },
+    { chain: ['location', 'search'], label: 'location.search', severity: 'warning' },
+    { chain: ['location', 'hash'],   label: 'location.hash',   severity: 'warning' },
+    { chain: ['location', 'href'],   label: 'location.href',   severity: 'warning' },
+    { chain: ['document', 'cookie'], label: 'document.cookie', severity: 'warning' },
+    { chain: ['window', 'name'],     label: 'window.name',     severity: 'warning' },
+    // v2 追加: 情報源としての process は赤くせず info レベル
+    { chain: ['process', 'env'],     label: 'process.env',     severity: 'info' },
+    { chain: ['process', 'argv'],    label: 'process.argv',    severity: 'info' },
+];
+
+/**
+ * Taint ソースとなる単独 Identifier。
+ * v2 改修 (T-04): severity を付与した Map に変更。
+ */
+const TAINT_IDENTIFIERS = new Map<string, SecuritySeverity>([
+    ['localStorage',    'warning'],
+    ['sessionStorage',  'warning'],
+    ['postMessage',     'warning'],
+    ['URLSearchParams', 'warning'],
+    ['FormData',        'warning'],
 ]);
+
+/**
+ * v2 改修 (T-04): CallExpression ベースの Taint Source 検出。
+ * fs.readFile / fetch などは「情報源だが直ちに危険ではない」ため info レベル。
+ */
+const TAINT_CALL_PATTERNS: Array<{ pattern: string; severity: SecuritySeverity }> = [
+    { pattern: 'fs.readFile',          severity: 'info' },
+    { pattern: 'fs.readFileSync',      severity: 'info' },
+    { pattern: 'fs.promises.readFile', severity: 'info' },
+    { pattern: 'fetch',                severity: 'info' },
+];
 
 function collectSecurityWarnings(sourceFile: ts.SourceFile): SecurityWarning[] {
     const warnings: SecurityWarning[] = [];
 
     const visit = (node: ts.Node) => {
-        // CallExpression: eval(...), Function(...) 等
+        // CallExpression: eval(...), Function(...), fs.readFile(...) 等
         if (ts.isCallExpression(node)) {
             const callText = node.expression.getText(sourceFile);
-            for (const [pattern, kind] of Object.entries(DANGEROUS_FUNCTIONS)) {
-                if (callText === pattern || callText.endsWith('.' + pattern)) {
+
+            // v2: 危険関数の検出 (critical)
+            for (const df of DANGEROUS_FUNCTIONS) {
+                if (callText === df.pattern || callText.endsWith('.' + df.pattern)) {
                     const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
-                    warnings.push({ kind, line, message: `Dangerous: ${pattern}()`, symbol: pattern });
+                    warnings.push({
+                        kind: df.kind,
+                        line,
+                        message: `Dangerous: ${df.pattern}()`,
+                        symbol: df.pattern,
+                        severity: df.severity,
+                    });
+                }
+            }
+
+            // v2 追加 (T-04): Taint Source となる CallExpression (info)
+            for (const tc of TAINT_CALL_PATTERNS) {
+                if (callText === tc.pattern || callText.endsWith('.' + tc.pattern)) {
+                    const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+                    warnings.push({
+                        kind: 'taint-source',
+                        line,
+                        message: `Taint source: ${tc.pattern}()`,
+                        symbol: tc.pattern,
+                        severity: tc.severity,
+                    });
                 }
             }
         }
@@ -451,7 +514,7 @@ function collectSecurityWarnings(sourceFile: ts.SourceFile): SecurityWarning[] {
         if (ts.isPropertyAccessExpression(node)) {
             const propName = node.name.text;
 
-            // innerHTML / outerHTML 代入チェック
+            // innerHTML / outerHTML 代入チェック (critical)
             if (propName === 'innerHTML' || propName === 'outerHTML') {
                 if (node.parent && ts.isBinaryExpression(node.parent) &&
                     node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
@@ -461,6 +524,7 @@ function collectSecurityWarnings(sourceFile: ts.SourceFile): SecurityWarning[] {
                         line,
                         message: `Direct ${propName} assignment`,
                         symbol: propName,
+                        severity: 'critical',
                     });
                 }
             }
@@ -476,6 +540,7 @@ function collectSecurityWarnings(sourceFile: ts.SourceFile): SecurityWarning[] {
                             line,
                             message: `Taint source: ${tc.label}`,
                             symbol: tc.label,
+                            severity: tc.severity,
                         });
                     }
                 }
@@ -490,16 +555,18 @@ function collectSecurityWarnings(sourceFile: ts.SourceFile): SecurityWarning[] {
                 !ts.isParameter(node.parent) &&
                 !ts.isPropertyDeclaration(node.parent)) {
                 const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+                const severity = TAINT_IDENTIFIERS.get(node.text) ?? 'warning';
                 warnings.push({
                     kind: 'taint-source',
                     line,
                     message: `Taint source: ${node.text}`,
                     symbol: node.text,
+                    severity,
                 });
             }
         }
 
-        // JSX: dangerouslySetInnerHTML
+        // JSX: dangerouslySetInnerHTML (critical)
         if (ts.isJsxAttribute(node) && ts.isIdentifier(node.name) && node.name.text === 'dangerouslySetInnerHTML') {
             const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
             warnings.push({
@@ -507,6 +574,7 @@ function collectSecurityWarnings(sourceFile: ts.SourceFile): SecurityWarning[] {
                 line,
                 message: 'React dangerouslySetInnerHTML',
                 symbol: 'dangerouslySetInnerHTML',
+                severity: 'critical',
             });
         }
 
@@ -610,6 +678,13 @@ function applyOptimizationMetrics(
     }
 
     for (const node of nodes.values()) {
+        // ─── v2 改修 (T-03): 巨大ファイル警告レベル先行判定 ──
+        // 行数に基づく警告レベルを最初に確定させ、後続の risk 計算でも参照する。
+        node.hugeFileLevel =
+            node.lineCount >= MASSIVE_FILE_LINE_THRESHOLD ? 'critical' :
+            node.lineCount >= HUGE_FILE_LINE_THRESHOLD ? 'warning' :
+            'normal';
+
         // ─── Barrel 検出 ──────────────────────────────
         // index.ts/index.tsx で、re-export エッジが多く、自前のエクスポートが少ないファイル
         const isIndexFile = /index\.(ts|tsx|js|jsx)$/.test(node.label);
@@ -639,8 +714,14 @@ function applyOptimizationMetrics(
         // Barrel ファイル = 巻き込みリスク
         if (node.isBarrel) { risk += 20; }
 
-        // 行数が多いのにエクスポートが少ない = 大きなファイルが丸ごと残るリスク
-        if (node.lineCount > 200 && exportCount <= 2) {
+        // ─── v2 改修 (T-03): hugeFileLevel ベースのリスク計算 ──
+        // 旧: lineCount > 200 && exportCount <= 2 で +15 のハードコード判定
+        // 新: hugeFileLevel から二段階で算出し、重複計算を防ぐ
+        if (node.hugeFileLevel === 'critical') {
+            // 1000 行超: エクスポート数に関係なく重い
+            risk += 25;
+        } else if (node.hugeFileLevel === 'warning' && exportCount <= 2) {
+            // 500-999 行 + エクスポート少 = 旧判定に相当する状況
             risk += 15;
         }
 
@@ -705,7 +786,12 @@ function collectGitHotspots(workspaceRoot: string): Map<string, GitHotspot> {
     return hotspots;
 }
 
-/** Git Hotspot をグラフノードに適用 */
+/**
+ * Git Hotspot をグラフノードに適用。
+ * v2 改修 (T-05): commit 数のパーセンタイル方式で isHotSpot フラグを付与する。
+ * - サンプル数が HOTSPOT_MIN_SAMPLE 未満の小規模リポジトリではフラグを立てない (誤検出回避)
+ * - 上位 HOTSPOT_PERCENTILE 以上の commit 数を持つノードに isHotSpot = true
+ */
 function applyGitHotspots(
     nodes: Map<string, GraphNode>,
     workspaceRoot: string
@@ -717,6 +803,24 @@ function applyGitHotspots(
         if (hotspot) {
             node.gitCommitCount = hotspot.commitCount;
             node.gitLastModified = hotspot.lastModified;
+        }
+    }
+
+    // v2 改修 (T-05): commit 数からパーセンタイル閾値を算出して isHotSpot を付与
+    const commitCounts = Array.from(nodes.values())
+        .map(n => n.gitCommitCount ?? 0)
+        .filter(c => c > 0)
+        .sort((a, b) => a - b);
+
+    // 下限ガード: サンプル数が極端に少ない場合はパーセンタイルが意味を成さない
+    if (commitCounts.length >= HOTSPOT_MIN_SAMPLE) {
+        const idx = Math.floor(commitCounts.length * HOTSPOT_PERCENTILE);
+        const threshold = commitCounts[Math.min(idx, commitCounts.length - 1)];
+
+        if (threshold !== undefined && threshold > 0) {
+            for (const node of nodes.values()) {
+                node.isHotSpot = (node.gitCommitCount ?? 0) >= threshold;
+            }
         }
     }
 

@@ -147,6 +147,8 @@ export function onGraphReceived(callbacks: {
         ring: 'global' as const,  // 初期状態は全て global、Worker 側で割り当て
         lineCount: n.lineCount,
         fileSize: n.fileSize,
+        // v2 改修 (T-06): cycleCount メトリクス計算のため inCycle フラグを渡す
+        inCycle: n.inCycle,
     }));
 
     const workerEdges: WorkerEdge[] = graph.edges

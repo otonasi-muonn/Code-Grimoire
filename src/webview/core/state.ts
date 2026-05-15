@@ -1,6 +1,6 @@
 // ─── 状態管理 ────────────────────────────────────────────
 import type { Container } from 'pixi.js';
-import type { DependencyGraph, GraphEdge, RuneMode, LayoutMode, HierarchyEdge, BubbleGroup, BubbleSizeMode } from '../../shared/types.js';
+import type { DependencyGraph, GraphEdge, RuneMode, LayoutMode, HierarchyEdge, BubbleGroup, BubbleSizeMode, BubbleMetric } from '../../shared/types.js';
 import type { LODLevel } from './lod.js';
 
 export interface BreadcrumbEntry {
@@ -33,6 +33,8 @@ export interface AppState {
     layoutMode: LayoutMode;
     /** 泡宇宙のサイズモード (行数 / ファイルサイズ) */
     bubbleSizeMode: BubbleSizeMode;
+    /** v2 改修 (T-06): 泡宇宙のヒートマップ軸 (凝集度 / 平均行数 / 循環数) */
+    bubbleMetric: BubbleMetric;
     /** 階層エッジ (Tree/Balloon 時のみ、V3.5) */
     hierarchyEdges: HierarchyEdge[];
     /** Bubble レイアウト時のディレクトリグループ円 (V6) */
@@ -70,6 +72,7 @@ export const state: AppState = {
     currentLOD: 'mid',
     layoutMode: 'force',
     bubbleSizeMode: 'lineCount',
+    bubbleMetric: 'cohesion',
     hierarchyEdges: [],
     bubbleGroups: [],
     breadcrumbs: [],
