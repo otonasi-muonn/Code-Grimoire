@@ -31,6 +31,12 @@ const HOTSPOT_PERCENTILE = 0.75;
 /** パーセンタイル算出を有効にする最小ノード数 (下限ガード) */
 const HOTSPOT_MIN_SAMPLE = 5;
 
+// ─── v2 改修: 直近 commit 活動バケット (P1-A) ───────────
+/** 1 バケットあたりの日数。30 日 = 約 1 ヶ月 */
+const ACTIVITY_BUCKET_DAYS = 30;
+/** バケット数。8 個 = 約 8 ヶ月分の commit 履歴 */
+const ACTIVITY_BUCKET_COUNT = 8;
+
 // ─── v2 改修: Multi-tsconfig 対応 (P0) ───────────────────
 /**
  * 複数 tsconfig 構成プロジェクト (Extension/Webview 分離・monorepo・Next.js 等)
@@ -902,7 +908,15 @@ function collectGitHotspots(workspaceRoot: string): Map<string, GitHotspot> {
         );
 
         let currentDate = '';
-        const fileDateMap = new Map<string, { count: number; lastDate: string }>();
+        const fileDateMap = new Map<string, {
+            count: number;
+            lastDate: string;
+            /** v2 改修 (P1-A): 直近 N 期間の commit 数バケット (古い→新しい順) */
+            activity: number[];
+        }>();
+
+        const nowMs = Date.now();
+        const bucketMs = ACTIVITY_BUCKET_DAYS * 86_400_000;
 
         for (const line of result.split('\n')) {
             if (line.startsWith('---COMMIT---')) {
@@ -911,6 +925,18 @@ function collectGitHotspots(workspaceRoot: string): Map<string, GitHotspot> {
             }
             const trimmed = line.trim();
             if (!trimmed || trimmed.length === 0) { continue; }
+
+            // v2 改修 (P1-A): 現在の commit のバケットインデックス
+            // BUCKET_COUNT - 1 = 直近、0 = 最古
+            let bucketIdx = -1;
+            const commitMs = new Date(currentDate).getTime();
+            if (Number.isFinite(commitMs)) {
+                const ageMs = nowMs - commitMs;
+                const bucketsAgo = Math.floor(ageMs / bucketMs);
+                if (bucketsAgo >= 0 && bucketsAgo < ACTIVITY_BUCKET_COUNT) {
+                    bucketIdx = ACTIVITY_BUCKET_COUNT - 1 - bucketsAgo;
+                }
+            }
 
             // 相対パスを正規化
             const relPath = trimmed.replace(/\\/g, '/');
@@ -921,8 +947,15 @@ function collectGitHotspots(workspaceRoot: string): Map<string, GitHotspot> {
                 if (currentDate > existing.lastDate) {
                     existing.lastDate = currentDate;
                 }
+                if (bucketIdx >= 0) {
+                    existing.activity[bucketIdx]++;
+                }
             } else {
-                fileDateMap.set(relPath, { count: 1, lastDate: currentDate });
+                const activity = new Array(ACTIVITY_BUCKET_COUNT).fill(0) as number[];
+                if (bucketIdx >= 0) {
+                    activity[bucketIdx] = 1;
+                }
+                fileDateMap.set(relPath, { count: 1, lastDate: currentDate, activity });
             }
         }
 
@@ -931,6 +964,7 @@ function collectGitHotspots(workspaceRoot: string): Map<string, GitHotspot> {
                 relativePath: relPath,
                 commitCount: data.count,
                 lastModified: data.lastDate,
+                recentActivity: data.activity,
             });
         }
     } catch (err) {
@@ -957,6 +991,8 @@ function applyGitHotspots(
         if (hotspot) {
             node.gitCommitCount = hotspot.commitCount;
             node.gitLastModified = hotspot.lastModified;
+            // v2 改修 (P1-A): 直近活動バケットをノードに付与
+            node.gitRecentActivity = hotspot.recentActivity;
         }
     }
 

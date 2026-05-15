@@ -95,7 +95,6 @@ function buildHelpContent(): string {
             <tr><td>Q / W / E</td><td>${isJa ? '宇宙の再構築（レイアウト切替）' : 'Rebuild cosmos (change layout)'}</td></tr>
             <tr><td>Ctrl+F</td><td>${isJa ? 'インクリメンタルサーチ & ハイライト' : 'Incremental search & highlight'}</td></tr>
             <tr><td>Esc</td><td>${isJa ? '検索解除 / パネルを閉じる' : 'Clear search / close panel'}</td></tr>
-            <tr><td>Space</td><td>${isJa ? '物理演算の一時停止 / 再開' : 'Pause / resume physics simulation'}</td></tr>
             <tr><td>?</td><td>${isJa ? 'このヘルプを表示 / 非表示' : 'Toggle this Help overlay'}</td></tr>
         </table>
 

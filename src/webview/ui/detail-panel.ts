@@ -181,14 +181,24 @@ export function openDetailPanel(nodeId: string) {
     }
 
     if (node.gitCommitCount !== undefined && node.gitCommitCount > 0) {
-        const maxCommits = 30;
-        const barCount = 8;
-        const commitNorm = Math.min(1, node.gitCommitCount / maxCommits);
+        // v2 改修 (P1-A): 直近 N 期間 (デフォルト 8 期間 × 30 日) の commit 数を
+        // 実データとしてバー描画する。Math.random() による偽装表示を撤去。
+        const activity = node.gitRecentActivity ?? [];
+        const barCount = activity.length > 0 ? activity.length : 8;
+        // ノード内の最大バケット値で正規化 (ファイル単位の相対比較)
+        const maxBar = Math.max(1, ...activity, 0);
         let bars = '';
         for (let b = 0; b < barCount; b++) {
-            const h = Math.max(2, Math.round(commitNorm * 22 * (0.3 + Math.random() * 0.7)));
-            const heatHue = commitNorm > 0.5 ? '0' : '30';
-            bars += `<div class="bar" style="height:${h}px;background:hsla(${heatHue},80%,${50 + b * 3}%,0.7)"></div>`;
+            const count = activity[b] ?? 0;
+            const heightRatio = maxBar > 0 ? count / maxBar : 0;
+            const h = Math.max(2, Math.round(heightRatio * 22));
+            // 色: commit があるバケット = 赤系 (活動)、無いバケット = 暗色 (静止)
+            const heatHue = count > 0 ? '0' : '210';
+            const lightness = count > 0 ? 45 + b * 3 : 25;
+            const alpha = count > 0 ? 0.75 : 0.35;
+            const monthsAgo = barCount - 1 - b;
+            const monthLabel = monthsAgo === 0 ? '直近 30 日' : `${monthsAgo + 1} ヶ月前`;
+            bars += `<div class="bar" style="height:${h}px;background:hsla(${heatHue},80%,${lightness}%,${alpha})" title="${monthLabel}: ${count} commits"></div>`;
         }
         // v2 改修 (T-05): isHotSpot フラグを優先表示。フラグが立たない場合は従来の commit 数ベース表記
         const activityLabel = node.isHotSpot
