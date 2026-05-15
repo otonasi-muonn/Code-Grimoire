@@ -31,23 +31,55 @@ const HOTSPOT_PERCENTILE = 0.75;
 /** パーセンタイル算出を有効にする最小ノード数 (下限ガード) */
 const HOTSPOT_MIN_SAMPLE = 5;
 
+// ─── v2 改修: Multi-tsconfig 対応 (P0) ───────────────────
+/**
+ * 複数 tsconfig 構成プロジェクト (Extension/Webview 分離・monorepo・Next.js 等)
+ * で全ファイルを取りこぼさないために、ワークスペース内の tsconfig*.json を再帰探索する。
+ */
+const TSCONFIG_SKIP_DIRS = new Set([
+    'node_modules', '.git', 'out', 'dist', 'build', '.next', '.nuxt', '.turbo', '.cache',
+]);
+
 // ─── Public API ─────────────────────────────────────────
 
 /**
  * ワークスペースルートから tsconfig.json を自動検出し、
  * TS Compiler API でファイル依存グラフを解析する。
+ *
+ * v2 改修 (P0): ワークスペース内に tsconfig が複数ある場合 (Extension/Webview 分離、
+ * monorepo の packages/*、Next.js の pages/server 分離 等) は、全 tsconfig の
+ * fileNames を union して 1 つの Program で解析する。これにより、特定の tsconfig が
+ * `exclude: ["src/webview/**\/*"]` のように一部を除外していても取りこぼさない。
  */
 export function analyzeWorkspace(workspaceRoot: string): DependencyGraph {
     const startTime = performance.now();
 
-    // 1. tsconfig.json の自動検出
-    const tsconfigPath = findTsConfig(workspaceRoot);
-    if (!tsconfigPath) {
-        // tsconfig が無い場合は workspaceRoot 配下の .ts ファイルを直接解析
+    // 1. ワークスペース内の全 tsconfig*.json を探索
+    const allTsConfigs = findAllTsConfigs(workspaceRoot);
+
+    if (allTsConfigs.length === 0) {
+        // tsconfig が一つも無い → 単純なフォールバック
         return analyzeFiles(workspaceRoot, getSourceFiles(workspaceRoot), startTime);
     }
 
-    // 2. tsconfig.json を読み込んでプログラム生成
+    if (allTsConfigs.length >= 2) {
+        // 複数 tsconfig: 全ファイルを union して 1 つの Program で解析
+        return analyzeMultipleTsConfigs(allTsConfigs, workspaceRoot, startTime);
+    }
+
+    // 単一 tsconfig: 既存の処理 (Project References パターン対応含む)
+    return analyzeSingleTsConfig(allTsConfigs[0], workspaceRoot, startTime);
+}
+
+/**
+ * 単一 tsconfig からの解析。
+ * Project References パターン (`files: []` + `references: [...]`) に対応。
+ */
+function analyzeSingleTsConfig(
+    tsconfigPath: string,
+    workspaceRoot: string,
+    startTime: number
+): DependencyGraph {
     const configFile = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
     if (configFile.error) {
         console.error('tsconfig read error:', ts.flattenDiagnosticMessageText(configFile.error.messageText, '\n'));
@@ -76,7 +108,6 @@ export function analyzeWorkspace(workspaceRoot: string): DependencyGraph {
         options: parsedConfig.options,
     });
 
-    // 3. グラフの構築
     return buildGraph(program, workspaceRoot, startTime);
 }
 
@@ -132,11 +163,134 @@ function analyzeProjectReferences(
     return buildGraph(program, workspaceRoot, startTime);
 }
 
-// ─── tsconfig 自動検出 ──────────────────────────────────
+// ─── Multi-tsconfig 解析 (v2 改修: P0) ───────────────────
 
-function findTsConfig(root: string): string | undefined {
-    const candidate = ts.findConfigFile(root, ts.sys.fileExists, 'tsconfig.json');
-    return candidate;
+/**
+ * ワークスペース配下の tsconfig*.json を再帰的に全て発見する。
+ * node_modules / 出力ディレクトリ / .git 等はスキップ。
+ */
+function findAllTsConfigs(root: string): string[] {
+    const found: string[] = [];
+    const walk = (dir: string) => {
+        let entries: fs.Dirent[];
+        try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+        } catch {
+            return;
+        }
+        for (const entry of entries) {
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+                if (TSCONFIG_SKIP_DIRS.has(entry.name)) { continue; }
+                walk(full);
+            } else if (entry.isFile() && /^tsconfig.*\.json$/.test(entry.name)) {
+                found.push(full);
+            }
+        }
+    };
+    walk(root);
+    return found;
+}
+
+/**
+ * 複数 tsconfig 構成のプロジェクトを解析する。
+ * 各 tsconfig の fileNames を union して 1 つの Program を作成。
+ * 各 tsconfig の compilerOptions はマージして使う (依存グラフ抽出が目的なので厳密な型チェックは不要)。
+ */
+function analyzeMultipleTsConfigs(
+    tsconfigPaths: string[],
+    workspaceRoot: string,
+    startTime: number
+): DependencyGraph {
+    const allFileNames = new Set<string>();
+    const collectedOptions: ts.CompilerOptions[] = [];
+
+    for (const tsconfigPath of tsconfigPaths) {
+        const configFile = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+        if (configFile.error) {
+            console.warn(`[Code Grimoire] tsconfig read failed: ${tsconfigPath}`);
+            continue;
+        }
+
+        // extends を含む tsconfig も ts.parseJsonConfigFileContent が解決する
+        const parsed = ts.parseJsonConfigFileContent(
+            configFile.config,
+            ts.sys,
+            path.dirname(tsconfigPath)
+        );
+
+        for (const f of parsed.fileNames) {
+            allFileNames.add(path.normalize(f));
+        }
+        collectedOptions.push(parsed.options);
+    }
+
+    if (allFileNames.size === 0) {
+        // どの tsconfig からもファイルが取れない → フォールバック
+        return analyzeFiles(workspaceRoot, getSourceFiles(workspaceRoot), startTime);
+    }
+
+    const mergedOptions = mergeCompilerOptions(collectedOptions);
+
+    const program = ts.createProgram({
+        rootNames: Array.from(allFileNames),
+        options: mergedOptions,
+    });
+
+    return buildGraph(program, workspaceRoot, startTime);
+}
+
+/**
+ * 複数 tsconfig の compilerOptions をマージする。
+ * - lib: 全 tsconfig の union (Node + DOM など両環境を許容)
+ * - module / moduleResolution: 最初の有効値
+ * - target: 最も新しい値
+ * - paths / baseUrl: 最初の有効値
+ * - strict: 解析時は不要なので false 寄せ (型エラーで Program 生成が止まるのを防ぐ)
+ * - skipLibCheck / allowJs / esModuleInterop: 常に有効
+ */
+function mergeCompilerOptions(allOpts: ts.CompilerOptions[]): ts.CompilerOptions {
+    const merged: ts.CompilerOptions = {
+        target: ts.ScriptTarget.ES2022,
+        skipLibCheck: true,
+        allowJs: true,
+        esModuleInterop: true,
+        strict: false,
+    };
+
+    const libs = new Set<string>();
+    for (const opts of allOpts) {
+        if (opts.lib) {
+            for (const lib of opts.lib) { libs.add(lib); }
+        }
+        if (merged.module === undefined && opts.module !== undefined) {
+            merged.module = opts.module;
+        }
+        if (merged.moduleResolution === undefined && opts.moduleResolution !== undefined) {
+            merged.moduleResolution = opts.moduleResolution;
+        }
+        if (opts.target !== undefined && opts.target > (merged.target ?? ts.ScriptTarget.ES2022)) {
+            merged.target = opts.target;
+        }
+        if (opts.paths && !merged.paths) {
+            merged.paths = opts.paths;
+        }
+        if (opts.baseUrl && !merged.baseUrl) {
+            merged.baseUrl = opts.baseUrl;
+        }
+        if (opts.jsx !== undefined && merged.jsx === undefined) {
+            merged.jsx = opts.jsx;
+        }
+    }
+
+    if (libs.size > 0) {
+        merged.lib = Array.from(libs);
+    } else {
+        // どの tsconfig にも lib 指定がない場合のデフォルト
+        merged.lib = ['ES2022', 'DOM', 'DOM.Iterable'];
+    }
+
+    return merged;
 }
 
 // ─── tsconfig が無い場合のフォールバック ─────────────────
