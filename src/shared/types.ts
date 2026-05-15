@@ -61,6 +61,14 @@ export interface GraphNode {
      * (デフォルト 75%) に入る場合 true。Architecture Rune で強調表示。
      */
     isHotSpot?: boolean;
+
+    // ─── v2 改修: 直近の commit 活動分布 (P1-A) ─────────
+    /**
+     * 直近 N 期間 (デフォルト 8 期間 × 30 日 ≒ 8 ヶ月) の commit 数バケット。
+     * 配列の古い→新しい順。Detail Panel の Activity バーで実データ表示に使う。
+     * Git 履歴が無い場合は undefined。
+     */
+    gitRecentActivity?: number[];
 }
 
 /** 巨大ファイル警告レベル (v2: T-03) */
@@ -168,6 +176,11 @@ export interface GitHotspot {
     commitCount: number;
     /** 最終更新日 (ISO 8601) */
     lastModified: string;
+    /**
+     * v2 改修 (P1-A): 直近 N 期間 (デフォルト 8 期間 × 30 日) の commit 数バケット。
+     * 配列の古い→新しい順。Activity ヒートバーの実データソース。
+     */
+    recentActivity?: number[];
 }
 
 /** 解析結果グラフ全体 */
