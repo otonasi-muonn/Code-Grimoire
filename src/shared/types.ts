@@ -242,7 +242,8 @@ export type ExtensionToWebviewMessage =
     | MsgInstantStructure
     | MsgGraphData
     | MsgAnalysisError
-    | MsgCodePeekResponse;
+    | MsgCodePeekResponse
+    | MsgSearchContentResponse;
 
 // ─── Webview -> Extension メッセージ ───────────────────
 
@@ -305,6 +306,30 @@ export interface MsgCodePeekResponse {
     };
 }
 
+/** ファイル内容検索リクエスト (Webview → Extension) */
+export interface MsgSearchContentRequest {
+    type: 'SEARCH_CONTENT_REQUEST';
+    payload: {
+        /** 検索クエリ (大文字小文字無視) */
+        query: string;
+        /** 競合制御用の連番。レスポンスでそのまま返るので Webview は古い結果を破棄できる */
+        requestId: number;
+    };
+}
+
+/** ファイル内容検索応答 (Extension → Webview) */
+export interface MsgSearchContentResponse {
+    type: 'SEARCH_CONTENT_RESPONSE';
+    payload: {
+        requestId: number;
+        query: string;
+        /** マッチしたファイル (グラフノード) の id 配列 */
+        matchedNodeIds: string[];
+        /** 結果上限に到達したか (UI で "+" 表示用) */
+        truncated: boolean;
+    };
+}
+
 /** Webview → Extension に送信するメッセージの Union */
 export type WebviewToExtensionMessage =
     | MsgJumpToFile
@@ -312,7 +337,8 @@ export type WebviewToExtensionMessage =
     | MsgRequestAnalysis
     | MsgRuneModeChange
     | MsgCodePeekRequest
-    | MsgOnboardingDismiss;
+    | MsgOnboardingDismiss
+    | MsgSearchContentRequest;
 
 // ─── バイナリプロトコル (Transferable Objects) ─────────
 

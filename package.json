@@ -41,9 +41,7 @@
     "color": "#1a1a2e",
     "theme": "dark"
   },
-  "activationEvents": [
-    
-  ],
+  "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -65,7 +63,10 @@
           "description": "Demo project paths for quick switching at exhibitions and demos. Configure name and absolute path for each preset.",
           "items": {
             "type": "object",
-            "required": ["name", "path"],
+            "required": [
+              "name",
+              "path"
+            ],
             "properties": {
               "name": {
                 "type": "string",
@@ -102,6 +103,7 @@
   },
   "dependencies": {
     "@types/d3-hierarchy": "^3.1.7",
+    "@vscode/ripgrep": "^1.18.0",
     "d3-force": "^3.0.0",
     "d3-hierarchy": "^3.1.2",
     "pixi-viewport": "^6.0.3",
