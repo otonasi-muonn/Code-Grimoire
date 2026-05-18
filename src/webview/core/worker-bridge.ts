@@ -57,29 +57,46 @@ export function initWorker(callbacks: {
             const blobUrl = URL.createObjectURL(blob);
             worker = new Worker(blobUrl);
 
+            // Worker メッセージ受信時の復旧処理 (例外境界)
+            const recoverFromError = () => {
+                state.isLoading = false;
+                callbacks.stopParticleLoading();
+                callbacks.updateStatusText();
+            };
+
             worker.onmessage = (event: MessageEvent<WorkerToMainMessage>) => {
-                const msg = event.data;
-                switch (msg.type) {
-                    case 'TICK':
-                        applyPositions(msg.payload.positions);
-                        callbacks.renderGraph();
-                        break;
-                    case 'DONE':
-                        applyPositions(msg.payload.positions);
-                        applyRings(msg.payload.rings);
-                        state.hierarchyEdges = msg.payload.hierarchyEdges || [];
-                        state.bubbleGroups = msg.payload.bubbleGroups || [];
-                        callbacks.renderGraph();
-                        state.isLoading = false;
-                        callbacks.stopParticleLoading();
-                        callbacks.updateStatusText();
-                        // Viewport を初回はフォーカスノード中心に移動
-                        if (state.focusNodeId) {
-                            const pos = state.nodePositions.get(state.focusNodeId);
-                            if (pos) { callbacks.viewport.moveCenter(pos.x, pos.y); }
-                        }
-                        break;
+                try {
+                    const msg = event.data;
+                    switch (msg.type) {
+                        case 'TICK':
+                            applyPositions(msg.payload.positions);
+                            callbacks.renderGraph();
+                            break;
+                        case 'DONE':
+                            applyPositions(msg.payload.positions);
+                            applyRings(msg.payload.rings);
+                            state.hierarchyEdges = msg.payload.hierarchyEdges || [];
+                            state.bubbleGroups = msg.payload.bubbleGroups || [];
+                            callbacks.renderGraph();
+                            state.isLoading = false;
+                            callbacks.stopParticleLoading();
+                            callbacks.updateStatusText();
+                            // Viewport を初回はフォーカスノード中心に移動
+                            if (state.focusNodeId) {
+                                const pos = state.nodePositions.get(state.focusNodeId);
+                                if (pos) { callbacks.viewport.moveCenter(pos.x, pos.y); }
+                            }
+                            break;
+                    }
+                } catch (err) {
+                    console.error('[Code Grimoire] Worker message handler failed:', err);
+                    recoverFromError();
                 }
+            };
+
+            worker.onerror = (event: ErrorEvent) => {
+                console.error('[Code Grimoire] Worker thread error:', event.message, event);
+                recoverFromError();
             };
 
             state.workerReady = true;
