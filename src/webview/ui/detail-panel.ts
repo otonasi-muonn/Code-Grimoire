@@ -201,6 +201,8 @@ export function openDetailPanel(nodeId: string) {
             bars += `<div class="bar" style="height:${h}px;background:hsla(${heatHue},80%,${lightness}%,${alpha})" title="${monthLabel}: ${count} commits"></div>`;
         }
         // v2 改修 (T-05): isHotSpot フラグを優先表示。フラグが立たない場合は従来の commit 数ベース表記
+        // commitNorm: 30 件を 100% とした正規化スコア (旧実装の閾値 0.3 = 9 commits を踏襲)
+        const commitNorm = Math.min(1, node.gitCommitCount / 30);
         const activityLabel = node.isHotSpot
             ? `${node.gitCommitCount} commits — Hot spot 🔥 (修正頻度上位)`
             : `${node.gitCommitCount} commits — ${commitNorm > 0.3 ? 'Active' : 'Stable'}`;
