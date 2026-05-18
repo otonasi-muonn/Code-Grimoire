@@ -39,7 +39,7 @@ export function activate(context: vscode.ExtensionContext) {
     };
 
     // ─── 解析実行 & Webview へ送信 ──────────────────────
-    const runAnalysis = () => {
+    const runAnalysis = async () => {
         if (!panel) { return; }
 
         const root = getWorkspaceRoot();
@@ -77,7 +77,7 @@ export function activate(context: vscode.ExtensionContext) {
             });
 
             // Phase 2: 完全なグラフ解析
-            const graph = analyzeWorkspace(root);
+            const graph = await analyzeWorkspace(root);
             cachedGraph = graph;
 
             // ファイル数を反映して再送 (onboardingShown は同じ値を維持)

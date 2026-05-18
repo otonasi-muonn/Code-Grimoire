@@ -4,7 +4,8 @@
 import * as ts from 'typescript';
 import * as path from 'path';
 import * as fs from 'fs';
-import { execSync } from 'child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type {
     DependencyGraph,
     GraphNode,
@@ -46,6 +47,9 @@ const TSCONFIG_SKIP_DIRS = new Set([
     'node_modules', '.git', 'out', 'dist', 'build', '.next', '.nuxt', '.turbo', '.cache',
 ]);
 
+// execFile を Promise 化。execSync の代わりに使い、Extension Host のブロックを避ける。
+const execFileAsync = promisify(execFile);
+
 // ─── Public API ─────────────────────────────────────────
 
 /**
@@ -57,7 +61,7 @@ const TSCONFIG_SKIP_DIRS = new Set([
  * fileNames を union して 1 つの Program で解析する。これにより、特定の tsconfig が
  * `exclude: ["src/webview/**\/*"]` のように一部を除外していても取りこぼさない。
  */
-export function analyzeWorkspace(workspaceRoot: string): DependencyGraph {
+export async function analyzeWorkspace(workspaceRoot: string): Promise<DependencyGraph> {
     const startTime = performance.now();
 
     // 1. ワークスペース内の全 tsconfig*.json を探索
@@ -81,11 +85,11 @@ export function analyzeWorkspace(workspaceRoot: string): DependencyGraph {
  * 単一 tsconfig からの解析。
  * Project References パターン (`files: []` + `references: [...]`) に対応。
  */
-function analyzeSingleTsConfig(
+async function analyzeSingleTsConfig(
     tsconfigPath: string,
     workspaceRoot: string,
     startTime: number
-): DependencyGraph {
+): Promise<DependencyGraph> {
     const configFile = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
     if (configFile.error) {
         console.error('tsconfig read error:', ts.flattenDiagnosticMessageText(configFile.error.messageText, '\n'));
@@ -119,12 +123,12 @@ function analyzeSingleTsConfig(
 
 // ─── Project References パターン対応 ────────────────────
 
-function analyzeProjectReferences(
+async function analyzeProjectReferences(
     tsconfigPath: string,
     references: Array<{ path: string }>,
     workspaceRoot: string,
     startTime: number
-): DependencyGraph {
+): Promise<DependencyGraph> {
     const tsconfigDir = path.dirname(tsconfigPath);
     const allFileNames: string[] = [];
     let mergedOptions: ts.CompilerOptions = {};
@@ -203,11 +207,11 @@ function findAllTsConfigs(root: string): string[] {
  * 各 tsconfig の fileNames を union して 1 つの Program を作成。
  * 各 tsconfig の compilerOptions はマージして使う (依存グラフ抽出が目的なので厳密な型チェックは不要)。
  */
-function analyzeMultipleTsConfigs(
+async function analyzeMultipleTsConfigs(
     tsconfigPaths: string[],
     workspaceRoot: string,
     startTime: number
-): DependencyGraph {
+): Promise<DependencyGraph> {
     const allFileNames = new Set<string>();
     const collectedOptions: ts.CompilerOptions[] = [];
 
@@ -320,7 +324,7 @@ function getSourceFiles(root: string): string[] {
     return files;
 }
 
-function analyzeFiles(root: string, files: string[], startTime: number): DependencyGraph {
+async function analyzeFiles(root: string, files: string[], startTime: number): Promise<DependencyGraph> {
     const program = ts.createProgram({
         rootNames: files,
         options: {
@@ -334,7 +338,7 @@ function analyzeFiles(root: string, files: string[], startTime: number): Depende
 
 // ─── グラフ構築のコアロジック ────────────────────────────
 
-function buildGraph(program: ts.Program, workspaceRoot: string, startTime: number): DependencyGraph {
+async function buildGraph(program: ts.Program, workspaceRoot: string, startTime: number): Promise<DependencyGraph> {
     const checker = program.getTypeChecker();
     const nodes: Map<string, GraphNode> = new Map();
     const edges: GraphEdge[] = [];
@@ -408,7 +412,7 @@ function buildGraph(program: ts.Program, workspaceRoot: string, startTime: numbe
     applyOptimizationMetrics(nodes, edges);
 
     // Phase 3: Git Hotspot 統合
-    const gitHotspots = applyGitHotspots(nodes, workspaceRoot);
+    const gitHotspots = await applyGitHotspots(nodes, workspaceRoot);
 
     const analysisTimeMs = Math.round(performance.now() - startTime);
 
@@ -891,7 +895,7 @@ function applyOptimizationMetrics(
 
 // ─── Phase 3: Git Hotspot ────────────────────────────────
 
-function collectGitHotspots(workspaceRoot: string): Map<string, GitHotspot> {
+async function collectGitHotspots(workspaceRoot: string): Promise<Map<string, GitHotspot>> {
     const hotspots = new Map<string, GitHotspot>();
 
     try {
@@ -900,10 +904,19 @@ function collectGitHotspots(workspaceRoot: string): Map<string, GitHotspot> {
             return hotspots;
         }
 
-        // ファイルごとの commit 数を取得
-        // git log --format="%H" --name-only で commit hash + ファイル名を取得
-        const result = execSync(
-            'git log --format="---COMMIT---%aI" --name-only --diff-filter=ACDMR --no-renames -- "*.ts" "*.tsx" "*.js" "*.jsx"',
+        // ファイルごとの commit 数を取得 (execFileAsync: shell を介さず Extension Host も非ブロック)
+        // 末尾の glob は git の pathspec として渡るため、シェル展開は不要。
+        const { stdout: result } = await execFileAsync(
+            'git',
+            [
+                'log',
+                '--format=---COMMIT---%aI',
+                '--name-only',
+                '--diff-filter=ACDMR',
+                '--no-renames',
+                '--',
+                '*.ts', '*.tsx', '*.js', '*.jsx',
+            ],
             { cwd: workspaceRoot, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, timeout: 15000 }
         );
 
@@ -980,11 +993,11 @@ function collectGitHotspots(workspaceRoot: string): Map<string, GitHotspot> {
  * - サンプル数が HOTSPOT_MIN_SAMPLE 未満の小規模リポジトリではフラグを立てない (誤検出回避)
  * - 上位 HOTSPOT_PERCENTILE 以上の commit 数を持つノードに isHotSpot = true
  */
-function applyGitHotspots(
+async function applyGitHotspots(
     nodes: Map<string, GraphNode>,
     workspaceRoot: string
-): GitHotspot[] {
-    const hotspots = collectGitHotspots(workspaceRoot);
+): Promise<GitHotspot[]> {
+    const hotspots = await collectGitHotspots(workspaceRoot);
 
     for (const node of nodes.values()) {
         const hotspot = hotspots.get(node.relativePath);
