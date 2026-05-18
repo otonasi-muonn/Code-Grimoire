@@ -9,7 +9,7 @@ export type TranslationKey =
     | 'dp.securityWarnings' | 'dp.optimization' | 'dp.codePreview'
     | 'dp.dataFlow'
     | 'dp.folder' | 'dp.folderFiles' | 'dp.folderStats'
-    | 'search.placeholder' | 'search.matches'
+    | 'search.placeholder' | 'search.matches' | 'search.byName' | 'search.byContent'
     | 'status.computing' | 'status.awaiting'
     | 'loading.summoning'
     | 'help.title' | 'help.mouse' | 'help.keyboard' | 'help.legend'
@@ -43,8 +43,10 @@ const translations: Record<string, Record<TranslationKey, string>> = {
         'dp.folder': 'Folder',
         'dp.folderFiles': 'Files',
         'dp.folderStats': 'Statistics',
-        'search.placeholder': 'Search files... (Ctrl+F)',
+        'search.placeholder': 'Search files & content... (Ctrl+F)',
         'search.matches': 'matches',
+        'search.byName': 'name',
+        'search.byContent': 'content',
         'status.computing': 'Computing layout...',
         'status.awaiting': 'Awaiting analysis...',
         'loading.summoning': '⟐ Summoning the Magic Circle...',
@@ -85,8 +87,10 @@ const translations: Record<string, Record<TranslationKey, string>> = {
         'dp.folder': 'フォルダ',
         'dp.folderFiles': '配下ファイル',
         'dp.folderStats': '統計',
-        'search.placeholder': 'ファイルを検索... (Ctrl+F)',
+        'search.placeholder': 'ファイル名・内容を検索... (Ctrl+F)',
         'search.matches': '件',
+        'search.byName': '名前',
+        'search.byContent': '内容',
         'status.computing': '魔法陣を構築中...',
         'status.awaiting': '解析待機中...',
         'loading.summoning': '⟐ 魔法陣を召喚中...',

@@ -4,6 +4,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { analyzeWorkspace } from './analyzer.js';
+import { runRipgrepSearch } from './ripgrep-search.js';
 import { getWebviewContent } from './webview.js';
 import type {
     ExtensionToWebviewMessage,
@@ -32,6 +33,8 @@ export function activate(context: vscode.ExtensionContext) {
 
     let panel: vscode.WebviewPanel | undefined = undefined;
     let cachedGraph: DependencyGraph | undefined = undefined;
+    /** 進行中の ripgrep 検索を中断するための AbortController */
+    let activeSearchAbort: AbortController | null = null;
 
     // ─── ワークスペースルート取得 ────────────────────────
     const getWorkspaceRoot = (): string | undefined => {
@@ -191,6 +194,52 @@ export function activate(context: vscode.ExtensionContext) {
                 case 'ONBOARDING_DISMISS': {
                     // v2 改修 (T-08): オンボーディング完了/スキップを globalState に永続化
                     await context.globalState.update(ONBOARDING_SHOWN_KEY, true);
+                    break;
+                }
+                case 'SEARCH_CONTENT_REQUEST': {
+                    const { query, requestId } = message.payload;
+                    const root = getWorkspaceRoot();
+                    const trimmed = query.trim();
+
+                    // 進行中の検索を中断
+                    activeSearchAbort?.abort();
+
+                    // 空クエリやワークスペース未開時は空応答 (UI 側で打ち消し)
+                    if (!root || !trimmed || !cachedGraph) {
+                        sendMessage({
+                            type: 'SEARCH_CONTENT_RESPONSE',
+                            payload: { requestId, query, matchedNodeIds: [], truncated: false },
+                        });
+                        break;
+                    }
+
+                    const ac = new AbortController();
+                    activeSearchAbort = ac;
+
+                    const { matches, truncated } = await runRipgrepSearch(trimmed, root, ac.signal);
+
+                    // キャンセル済みなら結果を送らない (古い検索の応答が後着するのを防ぐ)
+                    if (ac.signal.aborted) { break; }
+
+                    // 絶対パス → nodeId のマップを作成して照合 (Windows/POSIX 区切り違いを正規化)
+                    const norm = (p: string) => path.normalize(p).replace(/\\/g, '/').toLowerCase();
+                    const pathToId = new Map<string, string>();
+                    for (const node of cachedGraph.nodes) {
+                        pathToId.set(norm(node.filePath), node.id);
+                    }
+                    // ripgrep は相対パスを返すことがあるので、workspaceRoot からの絶対パスでも試行する
+                    const matchedNodeIds: string[] = [];
+                    for (const matchPath of matches) {
+                        const directKey = norm(matchPath);
+                        const absKey = norm(path.resolve(root, matchPath));
+                        const id = pathToId.get(directKey) ?? pathToId.get(absKey);
+                        if (id) { matchedNodeIds.push(id); }
+                    }
+
+                    sendMessage({
+                        type: 'SEARCH_CONTENT_RESPONSE',
+                        payload: { requestId, query, matchedNodeIds, truncated },
+                    });
                     break;
                 }
                 case 'CODE_PEEK_REQUEST': {

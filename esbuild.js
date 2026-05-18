@@ -13,7 +13,10 @@ const extensionConfig = {
     entryPoints: ['./src/extension.ts'],
     bundle: true,
     outfile: './out/extension.js',
-    external: ['vscode'],    // vscode モジュールは外部扱い（typescript はバンドルする）
+    // vscode モジュールは VS Code Host が提供。
+    // @vscode/ripgrep は rgPath をプラットフォーム固有 binary のパスとして返すため、
+    // バンドルすると require.resolve が壊れる。external 指定で runtime resolve に任せる。
+    external: ['vscode', '@vscode/ripgrep'],
     format: 'cjs',
     platform: 'node',
     target: 'node18',

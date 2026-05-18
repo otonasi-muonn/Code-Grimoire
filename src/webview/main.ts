@@ -59,6 +59,7 @@ import {
 import {
     setSearchContext,
     initSearchOverlay,
+    onSearchContentResponse,
 } from './ui/search.js';
 import {
     setMinimapContext,
@@ -169,6 +170,9 @@ window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessag
             break;
         case 'CODE_PEEK_RESPONSE':
             onCodePeekResponse(msg.payload);
+            break;
+        case 'SEARCH_CONTENT_RESPONSE':
+            onSearchContentResponse(msg.payload);
             break;
     }
 });
