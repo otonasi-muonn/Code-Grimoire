@@ -751,6 +751,24 @@ function collectSecurityWarnings(sourceFile: ts.SourceFile): SecurityWarning[] {
 
 // ─── Phase 3: 循環参照検出 (Tarjan's SCC) ──────────────
 
+/**
+ * Tarjan's Strongly Connected Components algorithm — **反復版**。
+ *
+ * もとは再帰実装だったが、深い import チェーン (10k+ ファイルが線形に依存) で
+ * Node.js のスタックを使い切って RangeError: Maximum call stack を吐く可能性が
+ * あったため、明示的な work-stack を持つ反復版に置き換える (lessons L11)。
+ *
+ * 出力 (どの SCC が検出されるか、各 SCC のメンバー) は再帰版と等価。
+ * 隣接リスト走査順序を保つため、各フレームに `neighbors` (= adj[v] のスナップ
+ * ショット) と `nextIdx` を保持し、再帰の代わりに `work.push` で潜行する。
+ *
+ * 再帰版との対応:
+ *   strongConnect(v) の前半 (index 採番 + stack push) → フレーム push 時に実施
+ *   for (const w of adj[v]) の各 iteration → フレームの nextIdx を進める
+ *   strongConnect(w) 呼び出し → 子フレームを push して次ループで処理
+ *   再帰戻り後の lowlink 伝播 → 子フレーム pop 時に親フレームへ反映
+ *   SCC ルート判定 (lowlink == index) → フレーム pop 時に実施
+ */
 function detectCircularDependencies(
     nodes: Map<string, GraphNode>,
     edges: GraphEdge[]
@@ -766,7 +784,6 @@ function detectCircularDependencies(
         }
     }
 
-    // Tarjan's SCC
     let index = 0;
     const stack: string[] = [];
     const onStack = new Set<string>();
@@ -774,23 +791,25 @@ function detectCircularDependencies(
     const lowlinks = new Map<string, number>();
     const sccs: string[][] = [];
 
-    function strongConnect(v: string) {
+    /** DFS 用ワークスタック (再帰呼び出しの代替) */
+    interface Frame {
+        v: string;
+        neighbors: string[];
+        nextIdx: number;
+    }
+    const work: Frame[] = [];
+
+    const beginNode = (v: string): void => {
         indices.set(v, index);
         lowlinks.set(v, index);
         index++;
         stack.push(v);
         onStack.add(v);
+        work.push({ v, neighbors: adj.get(v) ?? [], nextIdx: 0 });
+    };
 
-        for (const w of adj.get(v) || []) {
-            if (!indices.has(w)) {
-                strongConnect(w);
-                lowlinks.set(v, Math.min(lowlinks.get(v)!, lowlinks.get(w)!));
-            } else if (onStack.has(w)) {
-                lowlinks.set(v, Math.min(lowlinks.get(v)!, indices.get(w)!));
-            }
-        }
-
-        // SCC のルート
+    const finishNode = (v: string): void => {
+        // SCC ルート判定: lowlink == index ならスタックを v までポップして 1 つの SCC
         if (lowlinks.get(v) === indices.get(v)) {
             const scc: string[] = [];
             let w: string;
@@ -800,16 +819,39 @@ function detectCircularDependencies(
                 scc.push(w);
             } while (w !== v);
 
-            // サイズ2以上のSCCのみ（= 実際の循環参照）
+            // サイズ 2 以上の SCC のみ (= 実際の循環参照)
             if (scc.length >= 2) {
                 sccs.push(scc);
             }
         }
-    }
+    };
 
-    for (const v of nodes.keys()) {
-        if (!indices.has(v)) {
-            strongConnect(v);
+    for (const root of nodes.keys()) {
+        if (indices.has(root)) { continue; }
+
+        beginNode(root);
+
+        while (work.length > 0) {
+            const frame = work[work.length - 1];
+
+            if (frame.nextIdx < frame.neighbors.length) {
+                const w = frame.neighbors[frame.nextIdx++];
+                if (!indices.has(w)) {
+                    // 再帰呼び出しに相当: 子ノードを開始し、戻ったら親の lowlink を更新する
+                    beginNode(w);
+                } else if (onStack.has(w)) {
+                    lowlinks.set(frame.v, Math.min(lowlinks.get(frame.v)!, indices.get(w)!));
+                }
+            } else {
+                // 全 neighbors 処理完了 — フレームを閉じる
+                work.pop();
+                finishNode(frame.v);
+                // 親フレームへ lowlink を伝播 (再帰版の strongConnect(w) 戻り直後の処理)
+                if (work.length > 0) {
+                    const parent = work[work.length - 1];
+                    lowlinks.set(parent.v, Math.min(lowlinks.get(parent.v)!, lowlinks.get(frame.v)!));
+                }
+            }
         }
     }
 
