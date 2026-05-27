@@ -125,9 +125,12 @@ export function drawBubbleGroups(
             group.depth === state.focusedBubbleGroup.depth &&
             Math.abs(group.x - state.focusedBubbleGroup.x) < 1;
 
+        // v2 改修 (レビュー): 深い階層でも bubble の塗りが視認できるよう、
+        // 非フォーカス時の最小 alpha を 0.04 → 0.10 に引き上げ、減衰係数を
+        // 0.02 → 0.015 に緩和する。重なり過多なら別途 LOD で間引く。
         const alpha = isFocused
-            ? Math.max(0.1, 0.2 - group.depth * 0.02)
-            : Math.max(0.04, 0.12 - group.depth * 0.02);
+            ? Math.max(0.12, 0.22 - group.depth * 0.015)
+            : Math.max(0.10, 0.16 - group.depth * 0.015);
         const strokeAlpha = isFocused
             ? Math.max(0.4, 0.7 - group.depth * 0.04)
             : Math.max(0.08, 0.25 - group.depth * 0.04);
@@ -182,12 +185,16 @@ export function drawBubbleGroups(
             groupContainer.addChild(outerHit);
         }
 
-        // ラベル描画 (LOD Mid のみ)
+        // ラベル描画 (LOD Mid のみ。Far では bubble 円のみ残る)
+        // v2 改修 (レビュー): 非フォーカス時のフォントを 8-12 → 11-14 に底上げ、
+        // alpha 減衰も 0.1 係数 → 0.05 に緩和して深い階層でも読める形にする。
+        // さらにラベル背後に半透明ボックスを敷き、上に重なる node に label が
+        // 完全に隠されないようにする (描画順制約の回避)。
         if (state.currentLOD === 'mid' && group.r >= 30) {
             const labelFontSize = isFocused
-                ? Math.min(16, Math.max(10, group.r * 0.15))
-                : Math.min(12, Math.max(8, group.r * 0.12));
-            const labelColor = isFocused ? 0x88ccee : 0x5580aa;
+                ? Math.min(16, Math.max(11, group.r * 0.15))
+                : Math.min(14, Math.max(11, group.r * 0.16));
+            const labelColor = isFocused ? 0x88ccee : 0x88a8d0;
             const label = createSmartText(group.label, {
                 fontSize: labelFontSize,
                 fill: labelColor,
@@ -195,9 +202,20 @@ export function drawBubbleGroups(
             });
             label.anchor.set(0.5, 0);
             label.position.set(0, -group.r + 4);
-            label.alpha = isFocused
-                ? Math.max(0.7, 0.95 - group.depth * 0.05)
-                : Math.max(0.3, 0.7 - group.depth * 0.1);
+            const labelAlpha = isFocused
+                ? Math.max(0.75, 0.95 - group.depth * 0.04)
+                : Math.max(0.55, 0.8 - group.depth * 0.05);
+            label.alpha = labelAlpha;
+
+            // ラベル背景: createSmartText 後に width/height が確定するので、
+            // それを使って padding 付きの矩形を label の直前に挿入する。
+            const padX = 5;
+            const padY = 2;
+            const bgWidth = label.width + padX * 2;
+            const bgHeight = label.height + padY * 2;
+            const labelBg = new Graphics();
+            labelBg.roundRect(-bgWidth / 2, -group.r + 4 - padY, bgWidth, bgHeight, 3);
+            labelBg.fill({ color: 0x0a1428, alpha: Math.min(0.7, labelAlpha + 0.1) });
 
             if (onGroupTap) {
                 label.eventMode = 'static';
@@ -209,6 +227,7 @@ export function drawBubbleGroups(
                 });
             }
 
+            groupContainer.addChild(labelBg);
             groupContainer.addChild(label);
         }
 
