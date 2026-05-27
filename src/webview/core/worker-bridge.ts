@@ -107,7 +107,13 @@ export function initWorker(callbacks: {
             }
         })
         .catch(err => {
+            // Worker JS の取得失敗 (CSP 制限 / bundle 不在 / ネットワーク遮断) で
+            // ローディング状態が永続化するのを防ぐ。.catch は then の外側スコープなので
+            // recoverFromError を参照できず、直接フラグとコールバックを呼び戻す。
             console.error('[Code Grimoire] Worker init failed:', err);
+            state.isLoading = false;
+            callbacks.stopParticleLoading();
+            callbacks.updateStatusText();
         });
 }
 
