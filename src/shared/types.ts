@@ -135,12 +135,15 @@ export interface SecurityWarning {
     /** 対象シンボル名 */
     symbol: string;
     /**
-     * v2 改修 (T-04): 重要度。既存生成箇所にも漏れなく付与する。
+     * v2 改修 (T-04): 重要度。
      * - 'info':     process.env / fs.readFile 等の情報源
      * - 'warning':  req.body / location.search / localStorage 等の汚染源
      * - 'critical': eval / dangerouslySetInnerHTML / innerHTML 等の危険関数
+     *
+     * レビュー指摘により optional 化。読み込み側は未指定時 'warning' を
+     * デフォルトとして扱い、古いデータや将来追加される警告にも耐えるようにする。
      */
-    severity: SecuritySeverity;
+    severity?: SecuritySeverity;
 }
 
 /** 循環参照パス */

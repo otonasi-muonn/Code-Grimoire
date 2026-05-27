@@ -162,7 +162,9 @@ export function openDetailPanel(nodeId: string) {
         html += `<div class="dp-section">
             <div class="dp-label">${t('dp.securityWarnings')}</div>
             ${node.securityWarnings.map(w => {
-                const s = severityStyle(w.severity);
+                // severity が未指定の警告 (将来分や旧データ) は warning として扱う
+                const sev = w.severity ?? 'warning';
+                const s = severityStyle(sev);
                 return `<div class="dp-warning ${s.cls}">${s.icon} [${s.label}] L${w.line}: ${escapeHtml(w.message)}</div>`;
             }).join('')}
         </div>`;
