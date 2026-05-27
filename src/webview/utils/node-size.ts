@@ -1,26 +1,16 @@
 // ─── Node Size Stats / Relative Radius ─────────────────────
-// プロジェクト規模 (ノード数 / lineCount 分布) に依らない相対的な
-// ノード半径・リング間隔・padding を計算するためのユーティリティ。
-// 描画 (graph.ts) と物理衝突判定 (worker.ts forceCollide) で
-// 同じ関数を使うことで「描画はノード A と B が離れているのに
-// 衝突半径だけ重なる」という不整合を解消する。
+// プロジェクト規模 (ノード数) に応じて控えめに補正しつつ、
+// もともと経験的に良い値だった絶対値式に近似するノード半径・
+// リング間隔・padding を返す。
+//
+// 設計判断 (レビュー反映):
+//   - 元の式 Math.max(12, Math.min(60, 8 + sqrt(lc)*3)) を base とする
+//     (sqrt スケール + 12-60 範囲が「重みの距離感」と「大きすぎない」を両立)
+//   - 規模補正は ±15-25% 程度に抑え、絶対値の特性を維持
+//   - 描画 (graph.ts) と物理衝突判定 (worker.ts forceCollide) で
+//     同じ関数を使うことで半径不整合を解消、という当初目的は維持
 
 import type { NodeSizeStats } from '../../shared/types.js';
-
-/**
- * 仮想ビューポートの基準サイズ。実際の表示ピクセルではなく
- * 「ノード配置のスケール基準」。viewport.worldWidth/Height (= 10000) より
- * 小さめにとり、全ノードがこの矩形内に収まることを意図した値。
- */
-const VIRTUAL_VIEWPORT_SIDE = 4000;
-const VIRTUAL_VIEWPORT_AREA = VIRTUAL_VIEWPORT_SIDE * VIRTUAL_VIEWPORT_SIDE;
-
-/** 全ノードが占めるべき面積の比率 (10% 目安、密度がちょうど良い経験値) */
-const TARGET_NODE_COVERAGE = 0.10;
-
-/** ノード半径の上下限を avgRadius からどれくらい外せるか (相対倍率) */
-const MIN_RADIUS_RATIO = 0.45;
-const MAX_RADIUS_RATIO = 2.4;
 
 /**
  * 全ノードを走査して lineCount の分布統計を算出する。
@@ -44,61 +34,54 @@ export function computeNodeSizeStats(nodes: ReadonlyArray<{ lineCount: number }>
 }
 
 /**
- * stats から「ノード 1 個あたりの平均半径」を逆算する。
- * 全ノード面積の合計 = 仮想ビューポート面積 × TARGET_NODE_COVERAGE になるよう
- * avgRadius を決めることで、ノード数が 100 でも 10000 でも視覚的な密度が
- * ほぼ一定になる。
+ * プロジェクト規模に応じた一様補正係数。
+ * 大規模リポでは画面が詰まるので少し縮め、中小規模では元の絶対値式を維持。
  */
-function computeAvgRadius(stats: NodeSizeStats): number {
-    if (stats.count <= 0) { return 16; }
-    const avgArea = (VIRTUAL_VIEWPORT_AREA * TARGET_NODE_COVERAGE) / stats.count;
-    return Math.max(6, Math.sqrt(avgArea / Math.PI));
+function scaleByCount(count: number): number {
+    if (count > 2000) { return 0.75; }
+    if (count > 1000) { return 0.85; }
+    if (count > 500)  { return 0.95; }
+    return 1.0;
 }
 
 /**
  * ノード 1 つの相対描画半径を返す。
- * lineCount を log 正規化して [MIN_RADIUS_RATIO, MAX_RADIUS_RATIO] 倍に
- * マッピングし、avgRadius を中央値とする分布にする。
- * focus フラグが立っているときは 1.4 倍 (現状の慣習を維持)。
+ * 元の経験式 Math.max(12, Math.min(60, 8 + sqrt(lc)*3)) をそのまま base にし、
+ * 規模補正係数を掛けるだけ。これで:
+ *   - 100 ノード: 12 - 60 (元の式と完全一致)
+ *   - 1000 ノード: 10.2 - 51 (85%)
+ *   - 2000 ノード: 9 - 45 (75%)
+ * となり、lineCount 差による「重みでの距離感」と
+ * 「ノードが大きすぎ・はみ出し」回避を両立する。
  */
 export function computeNodeRadius(
     lineCount: number,
     stats: NodeSizeStats,
     isFocus: boolean = false,
 ): number {
-    const avg = computeAvgRadius(stats);
-    const minR = avg * MIN_RADIUS_RATIO;
-    const maxR = avg * MAX_RADIUS_RATIO;
-
-    // lineCount を log スケールで [0, 1] に正規化
-    const logMax = Math.log(Math.max(2, stats.maxLines));
-    const logMin = Math.log(Math.max(1, stats.minLines));
-    const logSpan = Math.max(0.1, logMax - logMin);
-    const t = (Math.log(Math.max(1, lineCount)) - logMin) / logSpan;
-    const clamped = Math.max(0, Math.min(1, t));
-
-    const radius = minR + clamped * (maxR - minR);
+    const baseRadius = Math.max(12, Math.min(60, 8 + Math.sqrt(Math.max(1, lineCount)) * 3));
+    const scale = scaleByCount(stats.count);
+    const radius = baseRadius * scale;
     return isFocus ? radius * 1.4 : radius;
 }
 
 /**
  * Galaxy レイアウトのリング間隔。
- * 深度ごとに「同深度ノードの最大半径 × 4 + 安全マージン」をとり、
- * プロジェクト規模に応じて自動拡縮する。
+ * 元の経験値 200 を base にしてプロジェクト規模で微調整するだけ。
+ * RING_RADII (focus/context/global) は別途絶対値だが、今回触らない。
  */
 export function computeRingSpacing(stats: NodeSizeStats): number {
-    const avg = computeAvgRadius(stats);
-    return avg * 6; // 半径 6 倍ぶんの間隔。隣接ノードの直径 (= 2r) を 2-3 個分挟む計算
+    const base = 200;
+    return base * scaleByCount(stats.count);
 }
 
 /**
- * Balloon (d3-pack) の padding。子円同士の隙間を avgRadius ベースで設定し、
- * 大きいファイルだらけの project でも小さい file だらけの project でも
- * 体感の「詰まり方」が一定になるようにする。
+ * Balloon (d3-pack) の padding。
+ * 元の経験値 20 を base、大規模リポだけ詰めて container に収める。
  */
 export function computeBalloonPadding(stats: NodeSizeStats): number {
-    const avg = computeAvgRadius(stats);
-    // d3-pack の padding は「兄弟円の中心間に追加するマージン」。
-    // 平均半径の 0.6 倍くらい挟めば視覚的に余裕がある。
-    return Math.max(4, avg * 0.6);
+    const base = 20;
+    if (stats.count > 2000) { return Math.max(8, base * 0.65); }
+    if (stats.count > 1000) { return Math.max(12, base * 0.8); }
+    return base;
 }

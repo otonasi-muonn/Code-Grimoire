@@ -156,10 +156,10 @@ function initForceSimulation(focusNodeId: string | null): void {
             .distanceMax(800)
         )
         .force('collide', forceCollide<WorkerNode>()
-            // v2 改修 (レビュー): 描画 (graph.ts) と同じ式で半径を計算し、
-            // 「描画では離れているのに collide だけ重なる」現象を解消する。
-            // + 8 は描画ノード同士の最低マージン (枠線 + 影分)。
-            .radius(d => computeNodeRadius(d.lineCount, currentNodeSizeStats) + 8)
+            // v2 改修 (レビュー): 描画 (graph.ts) と同じ半径を使い、不整合を解消。
+            // マージン + 4 は枠線分の最低マージン (元の式 + 14 から再縮小、
+            // 中央値あたりで元の collide 式とほぼ近似する)。
+            .radius(d => computeNodeRadius(d.lineCount, currentNodeSizeStats) + 4)
             .strength(1.0)
         )
         .force('ring', ringForce(0.6))
