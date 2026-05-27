@@ -66,3 +66,4 @@ config.local.json
 *.sqlite3
 *.db
 dump.rdb
+.claude/settings.local.json
