@@ -40,7 +40,10 @@ export function getNodeSides(node: GraphNode): number {
 
 /** 同心円ガイド描画 */
 export function drawRingGuides(ringContainer: Container) {
+    // graph.ts:renderGraph と同じ理由で、removeChildren より前に destroy しておく。
+    const oldRings = [...ringContainer.children];
     ringContainer.removeChildren();
+    for (const c of oldRings) { c.destroy({ children: true }); }
     const gfx = new Graphics();
 
     if (state.layoutMode === 'galaxy') {

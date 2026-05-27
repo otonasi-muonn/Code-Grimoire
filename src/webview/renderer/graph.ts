@@ -155,8 +155,14 @@ export function renderGraph() {
     const graph = state.graph;
     if (!graph) { return; }
 
+    // PixiJS Graphics の GL バッファを再利用で蓄積させないため、removeChildren より前に
+    // 旧子要素を destroy で再帰解放する。長時間運用 (展示・常駐) のリーク対策。
+    const oldNodes = [..._nodeContainer.children];
+    const oldEdges = [..._edgeContainer.children];
     _nodeContainer.removeChildren();
     _edgeContainer.removeChildren();
+    for (const c of oldNodes) { c.destroy({ children: true }); }
+    for (const c of oldEdges) { c.destroy({ children: true }); }
 
     drawRingGuides(_ringContainer);
 
