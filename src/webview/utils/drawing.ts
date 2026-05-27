@@ -128,9 +128,13 @@ export function drawBubbleGroups(
         // v2 改修 (レビュー): 深い階層でも bubble の塗りが視認できるよう、
         // 非フォーカス時の最小 alpha を 0.04 → 0.10 に引き上げ、減衰係数を
         // 0.02 → 0.015 に緩和する。重なり過多なら別途 LOD で間引く。
-        const alpha = isFocused
+        // さらに空フォルダ (子ノード 0) は「見ずらく」して背景ノイズを抑える
+        // が、可視化原則を守って完全に消さない (存在は識別可能なまま)。
+        const isEmpty = group.childNodeIds.length === 0;
+        const emptyDamp = isEmpty ? 0.25 : 1.0;
+        const alpha = (isFocused
             ? Math.max(0.12, 0.22 - group.depth * 0.015)
-            : Math.max(0.10, 0.16 - group.depth * 0.015);
+            : Math.max(0.10, 0.16 - group.depth * 0.015)) * emptyDamp;
         const strokeAlpha = isFocused
             ? Math.max(0.4, 0.7 - group.depth * 0.04)
             : Math.max(0.08, 0.25 - group.depth * 0.04);
