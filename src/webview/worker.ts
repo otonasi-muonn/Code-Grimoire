@@ -24,7 +24,14 @@ import type {
     HierarchyEdge,
     BubbleGroup,
     BubbleSizeMode,
+    NodeSizeStats,
 } from '../shared/types.js';
+import {
+    computeNodeSizeStats,
+    computeNodeRadius,
+    computeRingSpacing,
+    computeBalloonPadding,
+} from './utils/node-size.js';
 
 // ─── 定数 ────────────────────────────────────────────────
 const RING_RADII = {
@@ -53,6 +60,12 @@ let nodeIndexMap: Map<string, number> = new Map();
 let currentLayoutMode: LayoutMode = 'force';
 let currentFocusNodeId: string | null = null;
 let currentBubbleSizeMode: BubbleSizeMode = 'lineCount';
+/**
+ * v2 改修 (レビュー): forceCollide / Galaxy / Balloon の半径・間隔・padding を
+ * 相対値で決定するための統計。webview から INIT 時に届く想定だが、無ければ
+ * Worker 内で再計算する。
+ */
+let currentNodeSizeStats: NodeSizeStats = { count: 0, minLines: 1, maxLines: 1, medianLines: 1, p90Lines: 1 };
 /** 最後に計算された階層エッジ (Balloon/Galaxy レイアウト時のみ) */
 let lastHierarchyEdges: HierarchyEdge[] = [];
 /** 最後に計算された Bubble グループ円 (Balloon レイアウト時のみ) */
@@ -65,6 +78,9 @@ self.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
         case 'INIT':
             currentLayoutMode = msg.payload.layoutMode || 'force';
             currentBubbleSizeMode = msg.payload.bubbleSizeMode || 'lineCount';
+            // webview 側で算出済みなら受け取る。なければ Worker 内で再計算。
+            currentNodeSizeStats = msg.payload.nodeSizeStats
+                ?? computeNodeSizeStats(msg.payload.nodes);
             initLayout(msg.payload.nodes, msg.payload.edges, msg.payload.focusNodeId);
             break;
         case 'FOCUS':
@@ -140,8 +156,11 @@ function initForceSimulation(focusNodeId: string | null): void {
             .distanceMax(800)
         )
         .force('collide', forceCollide<WorkerNode>()
-            .radius(d => Math.max(22, Math.sqrt(d.lineCount) * 2.5 + 14))
-            .strength(0.8)
+            // v2 改修 (レビュー): 描画 (graph.ts) と同じ式で半径を計算し、
+            // 「描画では離れているのに collide だけ重なる」現象を解消する。
+            // + 8 は描画ノード同士の最低マージン (枠線 + 影分)。
+            .radius(d => computeNodeRadius(d.lineCount, currentNodeSizeStats) + 8)
+            .strength(1.0)
         )
         .force('ring', ringForce(0.6))
         .stop();
@@ -390,34 +409,82 @@ function calculateGalaxyLayout(): Map<string, { x: number; y: number }> {
     }
 
     // 放射状配置: 深度→半径、同じ深度のノードは等角に配置
-    const RING_SPACING = 200;
+    // v2 改修 (レビュー): RING_SPACING はプロジェクト規模 (ノード数・行数分布) に
+    // 応じて相対計算する。100 ノードのリポと 10000 ノードのリポで同じ密度になる。
+    const RING_SPACING = computeRingSpacing(currentNodeSizeStats);
     const CENTER_RADIUS = 0;
 
-    for (const [depth, group] of depthGroups) {
+    // v2 改修 (レビュー): 各ノードに割り当てた角度を保持し、次の深度の
+    // 「親に近い順」配置のために参照する。
+    const nodeAngles = new Map<string, number>();
+
+    // 深度を昇順にソートして親→子の順で配置する (Map は挿入順イテレートだが念のため)
+    const sortedDepths = Array.from(depthGroups.keys()).sort((a, b) => a - b);
+
+    for (const depth of sortedDepths) {
+        const group = depthGroups.get(depth)!;
         if (depth === 0) {
-            // エントリーポイントは中心
             for (const n of group) {
                 result.set(n.id, { x: 0, y: 0 });
+                nodeAngles.set(n.id, 0);
             }
             continue;
         }
 
         const radius = CENTER_RADIUS + depth * RING_SPACING;
-        const angleStep = (Math.PI * 2) / Math.max(1, group.length);
-        // 深度ごとにオフセットを付けてスパイラル感を出す
         const angleOffset = depth * 0.618 * Math.PI;
 
-        for (let i = 0; i < group.length; i++) {
+        // 同深度の各ノードについて「親 (= 自分を指す + 自分が指す前段ノード)
+        // のうち、深度が 1 浅いもの」を集め、その平均角度を割り当てる。
+        // これでソートすると親の周辺に子が集まり、親子線の交差が大幅減少する。
+        const groupWithAnchor = group.map(n => {
+            const parents: number[] = [];
+            // 有向 (依存方向) の前段
+            for (const src of reverseAdj.get(n.id) ?? []) {
+                if (depthMap.get(src) === depth - 1) {
+                    const a = nodeAngles.get(src);
+                    if (a !== undefined) { parents.push(a); }
+                }
+            }
+            // 有向 (被依存方向) の前段も補助的に拾う
+            for (const dst of forwardAdj.get(n.id) ?? []) {
+                if (depthMap.get(dst) === depth - 1) {
+                    const a = nodeAngles.get(dst);
+                    if (a !== undefined) { parents.push(a); }
+                }
+            }
+            // 親角度の重心を「単位円上のベクトル平均」で求める (角度の平均は
+            // ラップアラウンドがあるので、x/y 成分を平均してから atan2)
+            let anchor = 0;
+            if (parents.length > 0) {
+                let sx = 0;
+                let sy = 0;
+                for (const a of parents) { sx += Math.cos(a); sy += Math.sin(a); }
+                anchor = Math.atan2(sy, sx);
+            } else {
+                // 親が見つからないノードは元の順序を温存するため index 比例で散らす
+                anchor = 0;
+            }
+            return { node: n, anchor };
+        });
+
+        // anchor 角度でソート (親に近い順)
+        groupWithAnchor.sort((a, b) => a.anchor - b.anchor);
+
+        const angleStep = (Math.PI * 2) / Math.max(1, groupWithAnchor.length);
+
+        for (let i = 0; i < groupWithAnchor.length; i++) {
+            const { node: n } = groupWithAnchor[i];
             const angle = angleStep * i + angleOffset;
-            // 依存数が多いノードほど内側に微調整
-            const nodeDeps = (outDegree.get(group[i].id) || 0) + (inDegree.get(group[i].id) || 0);
+            const nodeDeps = (outDegree.get(n.id) || 0) + (inDegree.get(n.id) || 0);
             const radiusJitter = Math.min(RING_SPACING * 0.3, nodeDeps * 5);
             const finalRadius = Math.max(30, radius - radiusJitter);
 
-            result.set(group[i].id, {
+            result.set(n.id, {
                 x: Math.cos(angle) * finalRadius,
                 y: Math.sin(angle) * finalRadius,
             });
+            nodeAngles.set(n.id, angle);
         }
     }
 
@@ -466,9 +533,12 @@ function calculateBalloonLayout(dirTree: DirTreeNode): Map<string, { x: number; 
         .sum(d => d.value || 10)
         .sort((a, b) => (b.value || 0) - (a.value || 0));
 
+    // v2 改修 (レビュー): padding を nodeSizeStats から相対計算。
+    // d3-pack の padding は兄弟円の中心間マージンなので、平均ノード半径を
+    // 基準にしてプロジェクト規模で自動調整する。
     const packLayout = d3Pack<DirTreeNode>()
         .size([2000, 2000])
-        .padding(20);
+        .padding(computeBalloonPadding(currentNodeSizeStats));
 
     packLayout(root);
 

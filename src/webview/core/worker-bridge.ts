@@ -1,6 +1,7 @@
 // ─── Worker 管理 ─────────────────────────────────────────
 import type { MainToWorkerMessage, WorkerToMainMessage, WorkerNode, WorkerEdge } from '../../shared/types.js';
 import { state } from '../core/state.js';
+import { computeNodeSizeStats } from '../utils/node-size.js';
 
 let worker: Worker | null = null;
 
@@ -157,6 +158,9 @@ export function onGraphReceived(callbacks: {
         state.nodeDegree.set(edge.target, (state.nodeDegree.get(edge.target) || 0) + 1);
     }
 
+    // v2 改修 (レビュー): ノードサイズ統計を計算し、描画と Worker で共有する。
+    state.nodeSizeStats = computeNodeSizeStats(graph.nodes);
+
     // Worker がまだ準備中なら待機フラグを立てる
     if (!state.workerReady) {
         pendingGraphInit = true;
@@ -181,10 +185,26 @@ export function onGraphReceived(callbacks: {
             target: typeof e.target === 'string' ? e.target : (e.target as any).id,
         }));
 
-    // フォーカス: まだ未選択なら最初のソースファイルを選択
+    // フォーカス: まだ未選択なら「最も繋がりの多い source ファイル」を中心に据える。
+    // graph.nodes 配列順 (= 旧実装) はファイルシステム探索順依存で不定だった。
+    // state.nodeDegree は本関数の上で既に集計済みなので、それを流用する。
     if (!state.focusNodeId) {
-        const firstSource = graph.nodes.find(n => n.kind === 'source');
-        state.focusNodeId = firstSource?.id || graph.nodes[0].id;
+        let topId: string | null = null;
+        let topDeg = -1;
+        let topLines = -1;
+        for (const n of graph.nodes) {
+            if (n.kind !== 'source') { continue; }
+            const deg = state.nodeDegree.get(n.id) ?? 0;
+            // degree 最大、同点は lineCount が多い方
+            if (deg > topDeg || (deg === topDeg && n.lineCount > topLines)) {
+                topId = n.id;
+                topDeg = deg;
+                topLines = n.lineCount;
+            }
+        }
+        state.focusNodeId = topId
+            ?? graph.nodes.find(n => n.kind === 'source')?.id
+            ?? graph.nodes[0].id;
     }
 
     sendToWorker({
@@ -195,6 +215,7 @@ export function onGraphReceived(callbacks: {
             focusNodeId: state.focusNodeId,
             layoutMode: state.layoutMode,
             bubbleSizeMode: state.bubbleSizeMode,
+            nodeSizeStats: state.nodeSizeStats,
         },
     });
 

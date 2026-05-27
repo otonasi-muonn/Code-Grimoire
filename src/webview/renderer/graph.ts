@@ -6,6 +6,7 @@ import { state } from '../core/state.js';
 import { getNodeColor, getNodeGlowColor, getRingAlpha, hslToHex } from '../utils/color.js';
 import { createSmartText } from '../utils/font.js';
 import { drawDashedLine, getNodeSides, drawRingGuides, drawBubbleGroups } from '../utils/drawing.js';
+import { computeNodeRadius } from '../utils/node-size.js';
 import { animateScale, triggerClickRipple, startEdgeFlow, stopEdgeFlow } from './effects.js';
 import { dimmedNodes } from '../ui/search.js';
 import { openFolderDetailPanel } from '../ui/detail-panel.js';
@@ -24,6 +25,57 @@ let _refreshMinimap: () => void;
 /** 選択中ノードID (Detail Panel 連動) */
 export let selectedNodeId: string | null = null;
 export function setSelectedNodeId(id: string | null) { selectedNodeId = id; }
+
+// ─── Hover Tooltip (v2 レビュー) ────────────────────────
+// 200ms 遅延でノード情報 (label / lineCount / 依存数) を HTML 上に出す。
+// viewport ズームの影響を受けず、画面端での切り出しも HTML 側で制御しやすい。
+let _tooltipEl: HTMLElement | null = null;
+let _tooltipTimer: ReturnType<typeof setTimeout> | null = null;
+
+function ensureTooltipEl(): HTMLElement | null {
+    if (_tooltipEl) { return _tooltipEl; }
+    _tooltipEl = document.getElementById('node-tooltip');
+    return _tooltipEl;
+}
+
+function scheduleTooltip(node: GraphNode, clientX: number, clientY: number) {
+    if (_tooltipTimer) { clearTimeout(_tooltipTimer); }
+    _tooltipTimer = setTimeout(() => {
+        const el = ensureTooltipEl();
+        if (!el) { return; }
+        const inEdges = (state.edgesByTarget.get(node.id) || []).length;
+        const outEdges = (state.edgesBySource.get(node.id) || []).length;
+
+        // CSP P2 ルール準拠: innerHTML 直代入禁止、createElement + textContent で構築
+        while (el.firstChild) { el.removeChild(el.firstChild); }
+        const titleEl = document.createElement('div');
+        titleEl.className = 'nt-title';
+        titleEl.textContent = node.label;
+        el.appendChild(titleEl);
+        const metaEl = document.createElement('div');
+        metaEl.className = 'nt-meta';
+        metaEl.textContent = `${node.lineCount} lines · ↑${outEdges} imports · ↓${inEdges} imported`;
+        el.appendChild(metaEl);
+
+        // 画面右端で切り出されないよう、推定幅で位置を反転
+        const offsetX = 16;
+        const offsetY = -8;
+        const estWidth = 240;
+        const tx = clientX + offsetX + estWidth > window.innerWidth
+            ? clientX - offsetX - estWidth
+            : clientX + offsetX;
+        const ty = Math.max(8, clientY + offsetY);
+        el.style.left = `${tx}px`;
+        el.style.top = `${ty}px`;
+        el.classList.add('visible');
+    }, 200);
+}
+
+function hideTooltip() {
+    if (_tooltipTimer) { clearTimeout(_tooltipTimer); _tooltipTimer = null; }
+    const el = ensureTooltipEl();
+    if (el) { el.classList.remove('visible'); }
+}
 
 export function setGraphContext(ctx: {
     viewport: Viewport;
@@ -363,8 +415,11 @@ function createNodeGraphics(
     const isFocus = ring === 'focus';
     const lod = state.currentLOD;
 
-    let nodeRadius = Math.max(12, Math.min(60, 8 + Math.sqrt(node.lineCount) * 3));
-    if (isFocus) { nodeRadius *= 1.4; }
+    // v2 改修 (レビュー): 描画半径を「プロジェクト全体の lineCount 分布」
+    // からの相対値で決定する。同じ式を Worker 側 forceCollide でも使うため、
+    // 描画と衝突半径が必ず一致する。100 ノードでも 10000 ノードでも
+    // ビジュアル密度がほぼ一定になる。
+    const nodeRadius = computeNodeRadius(node.lineCount, state.nodeSizeStats, isFocus);
 
     // ═══════════════════════════════════════════════════
     // LOD: Far — ドットのみ
@@ -437,7 +492,19 @@ function createNodeGraphics(
     const labelFontSize = Math.max(10, Math.min(14, nodeRadius * 0.8));
     const label = createSmartText(node.label, { fontSize: labelFontSize, fill: glowColor, align: 'center' });
     label.anchor.set(0.5, 0.5);
-    label.position.set(0, nodeRadius + 16);
+
+    // v2 改修 (レビュー): Smart Labeling 強化 — ノードの接続数で
+    // ラベル位置を上下に振り分け、密集領域での重なりを統計的に減らす。
+    // 末端 (degree 0-1) ノードは alpha を下げて「見ずらく」し、hub を優先的に
+    // 読ませる (可視化原則: 見えなくはしない)。
+    const labelDegree = state.nodeDegree.get(node.id) ?? 0;
+    const labelAbove = labelDegree >= 3;
+    label.position.set(0, labelAbove ? -(nodeRadius + 14) : nodeRadius + 16);
+    if (labelDegree === 0) {
+        label.alpha = 0.45;
+    } else if (labelDegree === 1) {
+        label.alpha = 0.65;
+    }
     container.addChild(label);
 
     let nextBadgeY = nodeRadius + 30;
@@ -640,7 +707,7 @@ function attachNodeInteraction(
 ) {
     const baseScale = container.scale.x;
 
-    container.on('pointerover', () => {
+    container.on('pointerover', (e: FederatedPointerEvent) => {
         if (dimmedNodes.size > 0) { return; }
 
         state.hoveredNodeId = node.id;
@@ -662,6 +729,9 @@ function attachNodeInteraction(
                 if (c) { c.alpha = Math.min(1.0, c.alpha + 0.4); }
             }
         }
+
+        // v2 改修 (レビュー): 200ms 遅延でホバー ツールチップを表示
+        scheduleTooltip(node, e.clientX ?? 0, e.clientY ?? 0);
     });
 
     container.on('pointerout', () => {
@@ -682,6 +752,8 @@ function attachNodeInteraction(
             }
         }
         state.glowConnectedIds.clear();
+
+        hideTooltip();
     });
 
     container.on('pointertap', (e: FederatedPointerEvent) => {

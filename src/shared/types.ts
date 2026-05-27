@@ -381,6 +381,12 @@ export interface WorkerMsgInit {
         layoutMode?: LayoutMode;
         /** 泡宇宙のサイズモード — 省略時は 'lineCount' */
         bubbleSizeMode?: BubbleSizeMode;
+        /**
+         * v2 改修 (レビュー): forceCollide / Galaxy / Balloon の各レイアウトで
+         * 相対値による半径・間隔計算に使う統計。webview 側で計算して送る。
+         * 省略時 Worker 側で nodes から再計算するフォールバック。
+         */
+        nodeSizeStats?: NodeSizeStats;
     };
 }
 
@@ -465,6 +471,20 @@ export interface BubbleGroup {
 
 /** Bubble レイアウトのヒートマップ色付け軸 (v2: T-06) */
 export type BubbleMetric = 'cohesion' | 'avgLines' | 'cycles';
+
+/**
+ * ノード半径・リング間隔・padding を相対値で計算するための分布統計。
+ * Extension は計算せず、Webview の onGraphReceived で一度算出し
+ * graph.ts (描画) と Worker (forceCollide / Galaxy / Balloon) で共有する。
+ * すべて構造化クローン可能なプリミティブのみ。
+ */
+export interface NodeSizeStats {
+    count: number;
+    minLines: number;
+    maxLines: number;
+    medianLines: number;
+    p90Lines: number;
+}
 
 /** Worker に送る泡宇宙サイズモード変更メッセージ */
 export interface WorkerMsgBubbleSizeChange {

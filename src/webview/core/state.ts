@@ -1,6 +1,6 @@
 // ─── 状態管理 ────────────────────────────────────────────
 import type { Container } from 'pixi.js';
-import type { DependencyGraph, GraphEdge, RuneMode, LayoutMode, HierarchyEdge, BubbleGroup, BubbleSizeMode, BubbleMetric } from '../../shared/types.js';
+import type { DependencyGraph, GraphEdge, RuneMode, LayoutMode, HierarchyEdge, BubbleGroup, BubbleSizeMode, BubbleMetric, NodeSizeStats } from '../../shared/types.js';
 import type { LODLevel } from './lod.js';
 
 export interface BreadcrumbEntry {
@@ -55,6 +55,12 @@ export interface AppState {
     edgesBySource: Map<string, GraphEdge[]>;
     /** エッジ索引: target ノードID → そのノードに入るエッジ一覧 */
     edgesByTarget: Map<string, GraphEdge[]>;
+    /**
+     * v2 改修 (レビュー): ノード半径・リング間隔・padding を相対値で計算
+     * するための分布統計。onGraphReceived で 1 度だけ算出する。
+     * graph.ts (描画) と Worker (forceCollide / Galaxy / Balloon) で共有。
+     */
+    nodeSizeStats: NodeSizeStats;
 }
 
 export const state: AppState = {
@@ -83,4 +89,5 @@ export const state: AppState = {
     focusedBubbleGroup: null,
     edgesBySource: new Map(),
     edgesByTarget: new Map(),
+    nodeSizeStats: { count: 0, minLines: 1, maxLines: 1, medianLines: 1, p90Lines: 1 },
 };
