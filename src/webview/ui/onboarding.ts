@@ -47,13 +47,8 @@ export function initOnboarding(alreadyShown: boolean): void {
 
     initialized = true;
 
-    if (alreadyShown) {
-        // 既に表示済み: 非表示のままにする
-        tooltip.style.display = 'none';
-        dismissed = true;
-        return;
-    }
-
+    // v2 改修 (レビュー): リスナーは alreadyShown の値にかかわらず必ず登録する。
+    // ヘルプから showOnboardingAgain() で再表示した時にも Skip / Next が動く必要があるため。
     skipBtn.addEventListener('click', () => dismiss());
     nextBtn.addEventListener('click', () => {
         currentStep++;
@@ -66,6 +61,7 @@ export function initOnboarding(alreadyShown: boolean): void {
 
     // v2 改修 (レビュー指摘): ツアー表示中の数字キー (1-5) / Q/W/E が
     // 裏でルーン・レイアウト切替を発火しないよう、capturing phase で抑制する。
+    // dismissed フラグで非表示中は素通しになる。
     window.addEventListener('keydown', (e) => {
         if (dismissed) { return; }
         // Tab / Enter / Escape / 矢印は通す (ボタンのフォーカス操作のため)
@@ -76,6 +72,13 @@ export function initOnboarding(alreadyShown: boolean): void {
         // それ以外のキー (1-5, Q/W/E など) はツアー表示中は抑制
         e.stopImmediatePropagation();
     }, true);
+
+    if (alreadyShown) {
+        // 既に表示済み: 非表示のままにする。リスナーは登録済みなので再表示時に動く。
+        tooltip.style.display = 'none';
+        dismissed = true;
+        return;
+    }
 
     currentStep = 0;
     updateStep();

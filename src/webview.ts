@@ -48,7 +48,7 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             align-items: center;
             justify-content: center;
             background: #080a18;
-            z-index: 1000;
+            z-index: 1200;
             transition: opacity 0.6s ease;
         }
         #loading-overlay.hidden {
@@ -205,6 +205,21 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             background: rgba(100, 150, 255, 0.1);
             border: 1px solid rgba(100, 150, 255, 0.18);
             font-family: system-ui, sans-serif;
+        }
+        .help-replay-btn {
+            background: rgba(70, 130, 220, 0.18);
+            border: 1px solid rgba(120, 170, 240, 0.45);
+            color: #cde0ff;
+            padding: 8px 16px;
+            font-size: 13px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-family: system-ui, sans-serif;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .help-replay-btn:hover {
+            background: rgba(90, 150, 240, 0.32);
+            border-color: rgba(150, 200, 255, 0.7);
         }
         #detail-panel .dp-warning {
             color: #ff8844;

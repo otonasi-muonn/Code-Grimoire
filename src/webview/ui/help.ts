@@ -3,6 +3,8 @@ import { Graphics, Text, TextStyle, Container } from 'pixi.js';
 import { t } from '../core/i18n.js';
 import { currentLang } from '../core/i18n.js';
 import { MINIMAP_SIZE } from './minimap.js';
+import { closeDetailPanel } from './detail-panel.js';
+import { showOnboardingAgain } from './onboarding.js';
 
 let helpOverlay: HTMLElement | null = null;
 let helpCard: HTMLElement | null = null;
@@ -68,10 +70,25 @@ export function toggleHelp(forceState?: boolean) {
     if (!helpOverlay || !helpCard) { return; }
 
     if (helpVisible) {
+        // help 表示中は詳細パネルを閉じる (z-index 上は help > detail-panel だが、
+        // 同時表示は来場者に「2 枚開いている」混乱を与えるため排他にする)
+        closeDetailPanel();
         helpCard.innerHTML = buildHelpContent();
         helpOverlay.classList.add('visible');
+        bindHelpCardActions();
     } else {
         helpOverlay.classList.remove('visible');
+    }
+}
+
+/** ヘルプカード内の動的アクション (ツアー再表示など) をバインド */
+function bindHelpCardActions() {
+    const replayBtn = document.getElementById('help-replay-onboarding');
+    if (replayBtn) {
+        replayBtn.addEventListener('click', () => {
+            toggleHelp(false);
+            showOnboardingAgain();
+        });
     }
 }
 
@@ -199,5 +216,9 @@ function buildHelpContent(): string {
             <tr><td style="font-size:14px;color:#88aacc">大 ↔ 小</td><td>${isJa ? 'ノードのサイズ — ファイルの行数に比例。大きいほどコード量が多い' : 'Node size — proportional to file line count. Larger = more code'}</td></tr>
             <tr><td style="font-size:14px">━ ┄ ⤳ ⚡ ⇄</td><td>${isJa ? 'エッジフィルター — 分析のルーン時にツールバーに表示。エッジ種別ごとに表示/非表示を切替' : 'Edge filters — shown in toolbar during Analysis Rune. Toggle visibility per edge type'}</td></tr>
         </table>
+
+        <h3>🎓 ${isJa ? 'オンボーディングツアー' : 'Onboarding Tour'}</h3>
+        <p style="font-size:12px;color:#8899aa;margin:4px 0 8px">${isJa ? '初回起動時に表示された 5 ステップツアーをいつでも見返せます。' : 'Replay the 5-step tour shown at first launch.'}</p>
+        <button id="help-replay-onboarding" class="help-replay-btn">${isJa ? '🔁 ツアーをもう一度見る' : '🔁 Replay onboarding tour'}</button>
     `;
 }
