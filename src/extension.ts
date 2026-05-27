@@ -103,7 +103,19 @@ export function activate(context: vscode.ExtensionContext) {
             console.log(`[Code Grimoire] Analysis complete: ${graph.nodes.length} nodes, ${graph.edges.length} edges (${graph.analysisTimeMs}ms)`);
         } catch (err: any) {
             console.error('[Code Grimoire] Analysis error:', err);
-            sendMessage({ type: 'ANALYSIS_ERROR', payload: { message: err.message || String(err) } });
+            const message = err?.message || String(err);
+            sendMessage({ type: 'ANALYSIS_ERROR', payload: { message } });
+            // v2 改修 (レビュー): webview の通知だけだと展示来場者には届きにくいので
+            // VS Code のステータス通知にも出し、「再試行」で再解析を即起動できるようにする。
+            const retry = '再試行';
+            vscode.window.showErrorMessage(
+                `Code Grimoire: 解析に失敗しました — ${message}`,
+                retry,
+            ).then(choice => {
+                if (choice === retry && panel) {
+                    runAnalysisGuarded();
+                }
+            });
         }
     };
 
