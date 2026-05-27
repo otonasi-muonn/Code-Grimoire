@@ -116,10 +116,30 @@ export function activate(context: vscode.ExtensionContext) {
     const watcher = vscode.workspace.createFileSystemWatcher('**/*.{ts,tsx,js,jsx}');
     const debounceTimer = { handle: undefined as ReturnType<typeof setTimeout> | undefined };
 
+    // v2 改修 (レビュー): 解析時間が 1.5s デバウンスを超えるリポで連続編集すると
+    // runAnalysis が並走して CPU / 描画が荒れる。in-flight + pending の 2 段ガードで
+    // 「走行中は新規をスキップし、完了後に最新変更を 1 回だけ追従」を保証する。
+    let analysisInFlight = false;
+    let analysisPending = false;
+
+    const runAnalysisGuarded = async () => {
+        if (analysisInFlight) { analysisPending = true; return; }
+        analysisInFlight = true;
+        try {
+            await runAnalysis();
+        } finally {
+            analysisInFlight = false;
+            if (analysisPending) {
+                analysisPending = false;
+                scheduleReanalysis();
+            }
+        }
+    };
+
     const scheduleReanalysis = () => {
         if (debounceTimer.handle) { clearTimeout(debounceTimer.handle); }
         debounceTimer.handle = setTimeout(() => {
-            if (panel) { runAnalysis(); }
+            if (panel) { runAnalysisGuarded(); }
         }, 1500); // 1.5秒のデバウンス
     };
 
