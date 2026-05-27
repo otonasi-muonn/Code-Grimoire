@@ -214,6 +214,25 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             padding-left: 8px;
             margin: 4px 0;
         }
+        /* v2 改修 (レビュー): severity / hugeFileLevel の色を inline style から
+           class に逃がし、CSS インジェクション境界を消す + 色弱対応の二重符号化
+           (色 + アイコン + テキストラベル) を後押しする。
+           背景 rgba(6,8,22,0.97) に対し全色 4.5:1 以上のコントラストを維持。 */
+        #detail-panel .dp-warning.dp-severity-critical,
+        #detail-panel .dp-warning.dp-huge-critical {
+            color: #ff7777;
+            font-weight: bold;
+            border-left-color: rgba(255, 119, 119, 0.55);
+        }
+        #detail-panel .dp-warning.dp-severity-warning,
+        #detail-panel .dp-warning.dp-huge-warning {
+            color: #ffaa33;
+            border-left-color: rgba(255, 170, 51, 0.5);
+        }
+        #detail-panel .dp-warning.dp-severity-info {
+            color: #ffee66;
+            border-left-color: rgba(255, 238, 102, 0.45);
+        }
         #detail-panel .dp-dep-list {
             list-style: none;
             padding: 0;

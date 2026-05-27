@@ -90,14 +90,15 @@ export function openDetailPanel(nodeId: string) {
         </div>
     </div>`;
 
-    // v2 改修 (T-03): 巨大ファイル警告セクション
+    // v2 改修 (T-03 / レビュー): 巨大ファイル警告セクション。
+    // 色は CSS class に逃がし、アイコン + 大文字テキストラベルで色覚特性に対応。
     if (node.hugeFileLevel === 'critical') {
         html += `<div class="dp-section">
-            <div class="dp-warning" style="color:#ff7777;font-weight:bold">⚠ Critical: ${node.lineCount} lines (推奨: 500 行以下)</div>
+            <div class="dp-warning dp-huge-critical">⚠ [CRITICAL] ${node.lineCount} lines (推奨: 500 行以下)</div>
         </div>`;
     } else if (node.hugeFileLevel === 'warning') {
         html += `<div class="dp-section">
-            <div class="dp-warning" style="color:#ffaa33">⚠ Warning: ${node.lineCount} lines は分割を検討</div>
+            <div class="dp-warning dp-huge-warning">⚠ [WARNING] ${node.lineCount} lines は分割を検討</div>
         </div>`;
     }
 
@@ -145,14 +146,16 @@ export function openDetailPanel(nodeId: string) {
     }
 
     if (node.securityWarnings && node.securityWarnings.length > 0) {
-        // v2 改修 (T-04): severity 別にバッジ色を変える + アイコン併用 (P6 二重符号化)
+        // v2 改修 (T-04 / レビュー): severity を「色 + アイコン + 大文字テキスト」の
+        // 三重符号化で表示。色は CSS class (.dp-severity-*) に逃がして CSS インジェクション
+        // 境界を消し、色弱モデル (deuteranopia / protanopia / tritanopia) でも識別可能にする。
         const severityStyle = (sev: 'info' | 'warning' | 'critical') => {
             if (sev === 'critical') {
-                return { color: '#ff7777', icon: '⛔' };
+                return { cls: 'dp-severity-critical', icon: '⛔', label: 'CRITICAL' };
             } else if (sev === 'warning') {
-                return { color: '#ffaa33', icon: '⚠' };
+                return { cls: 'dp-severity-warning', icon: '⚠', label: 'WARNING' };
             } else {
-                return { color: '#ffee66', icon: 'ⓘ' };
+                return { cls: 'dp-severity-info', icon: 'ⓘ', label: 'INFO' };
             }
         };
 
@@ -160,7 +163,7 @@ export function openDetailPanel(nodeId: string) {
             <div class="dp-label">${t('dp.securityWarnings')}</div>
             ${node.securityWarnings.map(w => {
                 const s = severityStyle(w.severity);
-                return `<div class="dp-warning" style="color:${s.color}">${s.icon} [${w.severity}] L${w.line}: ${escapeHtml(w.message)}</div>`;
+                return `<div class="dp-warning ${s.cls}">${s.icon} [${s.label}] L${w.line}: ${escapeHtml(w.message)}</div>`;
             }).join('')}
         </div>`;
     }
