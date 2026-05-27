@@ -198,12 +198,17 @@ let fpsText: Text;
 async function init() {
     app = new Application();
     await app.init({
+        // PixiJS v8 は preference 未指定で WebGL → WebGPU → Canvas2D に
+        // サイレントフォールバックする。展示で WebGL 描画を謳う以上、明示する。
+        preference: 'webgl',
         background: 0x080a18,
         resizeTo: window,
         antialias: true,
         resolution: window.devicePixelRatio || 1,
         autoDensity: true,
     });
+
+    console.log(`[Code Grimoire] Renderer: ${app.renderer.type}`);
 
     document.body.appendChild(app.canvas as HTMLCanvasElement);
 
