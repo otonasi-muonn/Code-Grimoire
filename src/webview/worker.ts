@@ -29,8 +29,6 @@ import type {
 import {
     computeNodeSizeStats,
     computeNodeRadius,
-    computeRingSpacing,
-    computeBalloonPadding,
 } from './utils/node-size.js';
 
 // ─── 定数 ────────────────────────────────────────────────
@@ -408,18 +406,49 @@ function calculateGalaxyLayout(): Map<string, { x: number; y: number }> {
         depthGroups.get(d)!.push(n);
     }
 
-    // 放射状配置: 深度→半径、同じ深度のノードは等角に配置
-    // v2 改修 (レビュー): RING_SPACING はプロジェクト規模 (ノード数・行数分布) に
-    // 応じて相対計算する。100 ノードのリポと 10000 ノードのリポで同じ密度になる。
-    const RING_SPACING = computeRingSpacing(currentNodeSizeStats);
-    const CENTER_RADIUS = 0;
-
-    // v2 改修 (レビュー): 各ノードに割り当てた角度を保持し、次の深度の
-    // 「親に近い順」配置のために参照する。
+    // ─── 放射状配置 (Plan agent 解法 A + C による重なり解消) ─────────
+    //
+    // 解法 A: 各深度のリング半径を動的算出。
+    //   minByGap    = 前リング外周 + 自リング最大半径 + マージン
+    //   minByCircum = N × (2·Rmax + margin) / (2π)  ノードを 1 周に並べる必要円周
+    //   radius_d    = max(minByGap, minByCircum)
+    //
+    // 解法 C: 1 周に収まらない深度は内側 → 外側に subRing 分割する。
+    //   maxPerRing = floor(2π·r_d / (2·Rmax + margin))
+    //   親近傍ソート済の順序を保持して subRingIdx に振り分け
+    //
+    // radiusJitter は重なり要因 (旧コードで内側へ引っ張っていた) なので除去。
+    const MARGIN = 20;
     const nodeAngles = new Map<string, number>();
-
-    // 深度を昇順にソートして親→子の順で配置する (Map は挿入順イテレートだが念のため)
     const sortedDepths = Array.from(depthGroups.keys()).sort((a, b) => a - b);
+
+    // 各深度の最大ノード半径を事前計算 (描画半径と同じ式)
+    const depthRmax = new Map<number, number>();
+    for (const [d, group] of depthGroups) {
+        let rmax = 0;
+        for (const n of group) {
+            const r = computeNodeRadius(n.lineCount, currentNodeSizeStats);
+            if (r > rmax) { rmax = r; }
+        }
+        depthRmax.set(d, rmax);
+    }
+
+    // 動的リング半径 (解法 A)
+    const ringRadius = new Map<number, number>();
+    ringRadius.set(0, 0);
+    let prevR = 0;
+    let prevRmax = 0;
+    for (const d of sortedDepths) {
+        if (d === 0) { continue; }
+        const N = depthGroups.get(d)!.length;
+        const Rmax = depthRmax.get(d)!;
+        const minByGap = prevR + prevRmax + Rmax + MARGIN;
+        const minByCircum = (N * (2 * Rmax + MARGIN)) / (2 * Math.PI);
+        const r = Math.max(minByGap, minByCircum);
+        ringRadius.set(d, r);
+        prevR = r;
+        prevRmax = Rmax;
+    }
 
     for (const depth of sortedDepths) {
         const group = depthGroups.get(depth)!;
@@ -431,58 +460,56 @@ function calculateGalaxyLayout(): Map<string, { x: number; y: number }> {
             continue;
         }
 
-        const radius = CENTER_RADIUS + depth * RING_SPACING;
+        const radius = ringRadius.get(depth)!;
+        const Rmax = depthRmax.get(depth)!;
         const angleOffset = depth * 0.618 * Math.PI;
 
-        // 同深度の各ノードについて「親 (= 自分を指す + 自分が指す前段ノード)
-        // のうち、深度が 1 浅いもの」を集め、その平均角度を割り当てる。
-        // これでソートすると親の周辺に子が集まり、親子線の交差が大幅減少する。
+        // 親近傍ソート (38e675d で導入したロジックを維持)
         const groupWithAnchor = group.map(n => {
             const parents: number[] = [];
-            // 有向 (依存方向) の前段
             for (const src of reverseAdj.get(n.id) ?? []) {
                 if (depthMap.get(src) === depth - 1) {
                     const a = nodeAngles.get(src);
                     if (a !== undefined) { parents.push(a); }
                 }
             }
-            // 有向 (被依存方向) の前段も補助的に拾う
             for (const dst of forwardAdj.get(n.id) ?? []) {
                 if (depthMap.get(dst) === depth - 1) {
                     const a = nodeAngles.get(dst);
                     if (a !== undefined) { parents.push(a); }
                 }
             }
-            // 親角度の重心を「単位円上のベクトル平均」で求める (角度の平均は
-            // ラップアラウンドがあるので、x/y 成分を平均してから atan2)
             let anchor = 0;
             if (parents.length > 0) {
                 let sx = 0;
                 let sy = 0;
                 for (const a of parents) { sx += Math.cos(a); sy += Math.sin(a); }
                 anchor = Math.atan2(sy, sx);
-            } else {
-                // 親が見つからないノードは元の順序を温存するため index 比例で散らす
-                anchor = 0;
             }
             return { node: n, anchor };
         });
 
-        // anchor 角度でソート (親に近い順)
         groupWithAnchor.sort((a, b) => a.anchor - b.anchor);
 
-        const angleStep = (Math.PI * 2) / Math.max(1, groupWithAnchor.length);
+        // subRing 分割 (解法 C) — 1 周に収まらない場合に内→外へ振り分け
+        const subRingSpacing = 2 * Rmax + MARGIN;
+        const maxPerRing = Math.max(1, Math.floor((2 * Math.PI * radius) / subRingSpacing));
+        const totalSubRings = Math.ceil(groupWithAnchor.length / maxPerRing);
 
         for (let i = 0; i < groupWithAnchor.length; i++) {
             const { node: n } = groupWithAnchor[i];
-            const angle = angleStep * i + angleOffset;
-            const nodeDeps = (outDegree.get(n.id) || 0) + (inDegree.get(n.id) || 0);
-            const radiusJitter = Math.min(RING_SPACING * 0.3, nodeDeps * 5);
-            const finalRadius = Math.max(30, radius - radiusJitter);
+            const subRingIdx = Math.floor(i / maxPerRing);
+            const indexInRing = i % maxPerRing;
+            const ringSize = subRingIdx === totalSubRings - 1
+                ? groupWithAnchor.length - subRingIdx * maxPerRing
+                : maxPerRing;
+            const subRingR = radius + subRingIdx * subRingSpacing;
+            const angleStep = (Math.PI * 2) / Math.max(1, ringSize);
+            const angle = angleStep * indexInRing + angleOffset;
 
             result.set(n.id, {
-                x: Math.cos(angle) * finalRadius,
-                y: Math.sin(angle) * finalRadius,
+                x: Math.cos(angle) * subRingR,
+                y: Math.sin(angle) * subRingR,
             });
             nodeAngles.set(n.id, angle);
         }
@@ -515,39 +542,56 @@ function calculateGalaxyLayout(): Map<string, { x: number; y: number }> {
 
 /** Balloon レイアウト: パック円充填 (Bubble) — ディレクトリグループ円付き */
 function calculateBalloonLayout(dirTree: DirTreeNode): Map<string, { x: number; y: number }> {
-    // サイズモードに応じて value を再計算
     const nodeMap = new Map<string, WorkerNode>();
     for (const n of nodes) { nodeMap.set(n.id, n); }
-    if (currentBubbleSizeMode === 'fileSize') {
-        const assignFileSize = (d: DirTreeNode) => {
-            if (d.nodeId) {
-                const workerNode = nodeMap.get(d.nodeId);
-                d.value = Math.max(workerNode?.fileSize || workerNode?.lineCount || 10, 10);
-            }
-            for (const child of d.children) { assignFileSize(child); }
-        };
-        assignFileSize(dirTree);
-    }
+
+    // ─── Plan agent 解法 P + Q + R による重なり解消 ──────────────
+    //
+    // P: d.value を描画半径の二乗 (= 面積) に揃える。
+    //    d3-pack は r ∝ sqrt(value) なので d3 の内部半径 ≡ 実描画半径 になり、
+    //    子円同士は d3 の保証通り重ならない。
+    // Q: size を totalArea (= Σ πR²) と充填率 0.55 から動的算出。
+    //    container に収まらず葉が「はみ出る」現象を解消。
+    // R: padding は avgRadius × 0.3 ベースに動的化。
+    const assignRadiusSquared = (d: DirTreeNode) => {
+        if (d.nodeId) {
+            const wn = nodeMap.get(d.nodeId);
+            const lc = currentBubbleSizeMode === 'fileSize'
+                ? (wn?.fileSize ?? wn?.lineCount ?? 10)
+                : (wn?.lineCount ?? 10);
+            const r = computeNodeRadius(lc, currentNodeSizeStats);
+            d.value = Math.PI * r * r;
+        }
+        for (const child of d.children) { assignRadiusSquared(child); }
+    };
+    assignRadiusSquared(dirTree);
 
     const root = hierarchy(dirTree)
-        .sum(d => d.value || 10)
+        .sum(d => d.value || (Math.PI * 12 * 12))
         .sort((a, b) => (b.value || 0) - (a.value || 0));
 
-    // v2 改修 (レビュー): padding を nodeSizeStats から相対計算。
-    // d3-pack の padding は兄弟円の中心間マージンなので、平均ノード半径を
-    // 基準にしてプロジェクト規模で自動調整する。
+    const totalArea = root.value ?? Math.PI * 12 * 12;
+    const FILL_RATIO = 0.55; // d3-pack の経験的充填率
+    const dynamicSide = Math.min(
+        10000,
+        Math.max(2000, 2 * Math.sqrt(totalArea / (Math.PI * FILL_RATIO))),
+    );
+    const avgR = Math.sqrt(totalArea / (Math.PI * Math.max(1, nodes.length)));
+    const dynPadding = Math.max(4, avgR * 0.3);
+
     const packLayout = d3Pack<DirTreeNode>()
-        .size([2000, 2000])
-        .padding(computeBalloonPadding(currentNodeSizeStats));
+        .size([dynamicSide, dynamicSide])
+        .padding(dynPadding);
 
     packLayout(root);
 
     const result = new Map<string, { x: number; y: number }>();
     const groups: BubbleGroup[] = [];
+    const HALF = dynamicSide / 2;
 
     root.each((d: HierarchyNode<DirTreeNode>) => {
-        const dx = (d as any).x - 1000;
-        const dy = (d as any).y - 1000;
+        const dx = (d as any).x - HALF;
+        const dy = (d as any).y - HALF;
         const dr = (d as any).r as number;
 
         if (d.data.nodeId) {

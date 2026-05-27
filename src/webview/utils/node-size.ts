@@ -65,23 +65,7 @@ export function computeNodeRadius(
     return isFocus ? radius * 1.4 : radius;
 }
 
-/**
- * Galaxy レイアウトのリング間隔。
- * 元の経験値 200 を base にしてプロジェクト規模で微調整するだけ。
- * RING_RADII (focus/context/global) は別途絶対値だが、今回触らない。
- */
-export function computeRingSpacing(stats: NodeSizeStats): number {
-    const base = 200;
-    return base * scaleByCount(stats.count);
-}
-
-/**
- * Balloon (d3-pack) の padding。
- * 元の経験値 20 を base、大規模リポだけ詰めて container に収める。
- */
-export function computeBalloonPadding(stats: NodeSizeStats): number {
-    const base = 20;
-    if (stats.count > 2000) { return Math.max(8, base * 0.65); }
-    if (stats.count > 1000) { return Math.max(12, base * 0.8); }
-    return base;
-}
+// computeRingSpacing / computeBalloonPadding はかつてここに存在したが、
+// Galaxy と Balloon の重なり解消フェーズで「ノード半径から動的に計算」する
+// 方式に置き換わったため撤去 (worker.ts:calculateGalaxyLayout /
+// calculateBalloonLayout 内で直接計算する)。
