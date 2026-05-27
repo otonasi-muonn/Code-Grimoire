@@ -206,6 +206,42 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             border: 1px solid rgba(100, 150, 255, 0.18);
             font-family: system-ui, sans-serif;
         }
+        /* v2 改修 (レビュー): ノード hover ツールチップ。viewport ズームの影響を
+           受けないよう HTML 側で実装。z-index は detail-panel(800) より上、
+           help-overlay(950) より下に置く。 */
+        #node-tooltip {
+            position: fixed;
+            pointer-events: none;
+            background: rgba(10, 20, 40, 0.94);
+            color: #d8e0f4;
+            padding: 6px 10px;
+            border: 1px solid rgba(120, 170, 240, 0.45);
+            border-radius: 5px;
+            font-size: 12px;
+            font-family: system-ui, sans-serif;
+            line-height: 1.5;
+            z-index: 850;
+            opacity: 0;
+            transform: translateY(-4px);
+            transition: opacity 0.15s ease, transform 0.15s ease;
+            white-space: nowrap;
+            max-width: 320px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+        }
+        #node-tooltip.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        #node-tooltip .nt-title {
+            font-weight: bold;
+            color: #cfe8ff;
+            font-size: 12px;
+        }
+        #node-tooltip .nt-meta {
+            font-size: 11px;
+            opacity: 0.85;
+            margin-top: 2px;
+        }
         .help-replay-btn {
             background: rgba(70, 130, 220, 0.18);
             border: 1px solid rgba(120, 170, 240, 0.45);
@@ -552,6 +588,8 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
         </div>
         <div id="dp-content"></div>
     </div>
+    <!-- Hover Tooltip (v2: レビュー) -->
+    <div id="node-tooltip" aria-hidden="true"></div>
     <!-- Help Overlay (V6 Phase 4) -->
     <div id="help-overlay">
         <span class="help-close" id="help-close">✕</span>
