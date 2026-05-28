@@ -77,7 +77,7 @@
 - ディレクトリ構造を **入れ子の円 (泡)** で表現。
 - d3-hierarchy の pack レイアウトでフォルダ円を配置、ファイルは所属フォルダの中に配置される。
 - ファイル円のサイズはツールバーで切替可能: **📏 行数** または **📦 ファイルサイズ**。
-- フォルダ円自体に **凝集度ヒートマップ** (T-06): cohesion / avgLineCount / cycleCount のメトリクスで縁取り色が変わる。
+- フォルダ円自体に **凝集度ヒートマップ** (T-06): cohesion / avgLineCount / cycleCount のメトリクスで縁取り色が変わる。なお `cycleCount` は「循環の本数」ではなく **そのフォルダ内で循環参照に巻き込まれているファイル数** (`inCycle = true` の数)。
 
 ### 何が見えるか
 - **フォルダ構造そのもの**: `src/components/Button/Button.tsx` がどう入れ子になっているか
@@ -97,7 +97,7 @@
 
 ### おすすめのルーン組み合わせ
 - **default × Bubble**: フォルダ構造の俯瞰、これが基本形
-- **architecture × Bubble**: フォルダ単位の cycleCount メトリクスで「循環の多いフォルダ」が赤くなる
+- **architecture × Bubble**: フォルダ単位の cycleCount メトリクスで「循環参照に巻き込まれたファイルが多いフォルダ」が赤くなる
 - **optimization × Bubble**: 大きいフォルダがどこにあるか、avgLineCount で「肥大フォルダ」を発見
 
 ---
