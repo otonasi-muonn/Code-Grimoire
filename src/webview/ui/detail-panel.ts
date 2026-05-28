@@ -128,7 +128,7 @@ export function openDetailPanel(nodeId: string) {
             <ul class="dp-dep-list">${outEdges.map(e => {
                 const targetNode = graph.nodes.find(n => n.id === e.target);
                 const label = targetNode?.label || e.target.split('/').pop() || e.target;
-                return `<li data-node-id="${escapeHtml(e.target)}">${escapeHtml(label)} <small style="color:rgba(100,140,200,0.5)">(${e.kind})</small></li>`;
+                return `<li data-node-id="${escapeHtml(e.target)}">${escapeHtml(label)} <small style="color:rgba(140,165,210,0.8)">(${e.kind})</small></li>`;
             }).join('')}</ul>
         </div>`;
     }
@@ -228,8 +228,8 @@ export function openDetailPanel(nodeId: string) {
             html += `<div class="dp-section">
                 <div class="dp-label">${t('dp.dataFlow')}</div>
                 <div class="dp-value">
-                    <span class="dp-badge" style="color:#66ddff">↑ ${totalOut} symbols out</span>
-                    <span class="dp-badge" style="color:#66ddff">↓ ${totalIn} symbols in</span>
+                    <span class="dp-badge" style="color:#66ddff">↑ 供給 ${totalIn}</span>
+                    <span class="dp-badge" style="color:#66ddff">↓ 消費 ${totalOut}</span>
                 </div>
             </div>`;
         }
@@ -449,7 +449,7 @@ export function openFolderDetailPanel(group: BubbleGroup) {
         <ul class="dp-dep-list">${childNodes
             .sort((a, b) => b.lineCount - a.lineCount)
             .map(n =>
-                `<li data-node-id="${escapeHtml(n.id)}">${escapeHtml(n.label)} <small style="color:rgba(100,140,200,0.5)">(${n.lineCount}L)</small></li>`
+                `<li data-node-id="${escapeHtml(n.id)}">${escapeHtml(n.label)} <small style="color:rgba(140,165,210,0.8)">(${n.lineCount}L)</small></li>`
             ).join('')}</ul>
     </div>`;
 

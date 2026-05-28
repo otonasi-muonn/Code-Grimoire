@@ -108,7 +108,8 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             box-shadow: 0 0 16px rgba(0, 180, 255, 0.18);
         }
         #search-input::placeholder {
-            color: rgba(100, 140, 200, 0.5);
+            /* v2 改修 (a11y): 2.25:1 → WCAG 4.5:1 以上に引き上げ */
+            color: rgba(140, 165, 210, 0.8);
         }
         .search-icon {
             position: absolute;
@@ -122,7 +123,8 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             position: absolute;
             right: calc(50% - 168px);
             top: 22px;
-            color: rgba(100, 180, 255, 0.6);
+            /* v2 改修 (a11y): 3.80:1 → WCAG 4.5:1 以上に引き上げ */
+            color: rgba(120, 190, 255, 0.95);
             font-family: system-ui, sans-serif;
             font-size: 11px;
         }
@@ -475,7 +477,8 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
         #detail-panel .dp-code-peek .cp-line-nums {
             position: absolute;
             top: 12px; left: 12px;
-            color: rgba(100, 140, 200, 0.25);
+            /* v2 改修 (a11y): 1.36:1 (実質判読不能) → WCAG 基準へ。会場プロジェクタ対策 */
+            color: rgba(140, 165, 210, 0.8);
             font-family: Consolas, 'Courier New', monospace;
             font-size: 11px;
             line-height: 1.5;
@@ -572,7 +575,7 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
 <body>
     <div id="loading-overlay">
         <div class="loading-circle"></div>
-        <div class="loading-text">⟐ Summoning the Magic Circle...</div>
+        <div class="loading-text">⟐ 魔方陣を構築中… 依存関係を解析しています</div>
     </div>
     <!-- Search Overlay (V3 Phase 2) -->
     <div id="search-overlay">
