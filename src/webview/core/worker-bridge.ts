@@ -1,6 +1,7 @@
 // ─── Worker 管理 ─────────────────────────────────────────
 import type { MainToWorkerMessage, WorkerToMainMessage, WorkerNode, WorkerEdge } from '../../shared/types.js';
 import { state } from '../core/state.js';
+import { computeNodeSizeStats } from '../utils/node-size.js';
 
 let worker: Worker | null = null;
 
@@ -57,29 +58,46 @@ export function initWorker(callbacks: {
             const blobUrl = URL.createObjectURL(blob);
             worker = new Worker(blobUrl);
 
+            // Worker メッセージ受信時の復旧処理 (例外境界)
+            const recoverFromError = () => {
+                state.isLoading = false;
+                callbacks.stopParticleLoading();
+                callbacks.updateStatusText();
+            };
+
             worker.onmessage = (event: MessageEvent<WorkerToMainMessage>) => {
-                const msg = event.data;
-                switch (msg.type) {
-                    case 'TICK':
-                        applyPositions(msg.payload.positions);
-                        callbacks.renderGraph();
-                        break;
-                    case 'DONE':
-                        applyPositions(msg.payload.positions);
-                        applyRings(msg.payload.rings);
-                        state.hierarchyEdges = msg.payload.hierarchyEdges || [];
-                        state.bubbleGroups = msg.payload.bubbleGroups || [];
-                        callbacks.renderGraph();
-                        state.isLoading = false;
-                        callbacks.stopParticleLoading();
-                        callbacks.updateStatusText();
-                        // Viewport を初回はフォーカスノード中心に移動
-                        if (state.focusNodeId) {
-                            const pos = state.nodePositions.get(state.focusNodeId);
-                            if (pos) { callbacks.viewport.moveCenter(pos.x, pos.y); }
-                        }
-                        break;
+                try {
+                    const msg = event.data;
+                    switch (msg.type) {
+                        case 'TICK':
+                            applyPositions(msg.payload.positions);
+                            callbacks.renderGraph();
+                            break;
+                        case 'DONE':
+                            applyPositions(msg.payload.positions);
+                            applyRings(msg.payload.rings);
+                            state.hierarchyEdges = msg.payload.hierarchyEdges || [];
+                            state.bubbleGroups = msg.payload.bubbleGroups || [];
+                            callbacks.renderGraph();
+                            state.isLoading = false;
+                            callbacks.stopParticleLoading();
+                            callbacks.updateStatusText();
+                            // Viewport を初回はフォーカスノード中心に移動
+                            if (state.focusNodeId) {
+                                const pos = state.nodePositions.get(state.focusNodeId);
+                                if (pos) { callbacks.viewport.moveCenter(pos.x, pos.y); }
+                            }
+                            break;
+                    }
+                } catch (err) {
+                    console.error('[Code Grimoire] Worker message handler failed:', err);
+                    recoverFromError();
                 }
+            };
+
+            worker.onerror = (event: ErrorEvent) => {
+                console.error('[Code Grimoire] Worker thread error:', event.message, event);
+                recoverFromError();
             };
 
             state.workerReady = true;
@@ -90,7 +108,13 @@ export function initWorker(callbacks: {
             }
         })
         .catch(err => {
+            // Worker JS の取得失敗 (CSP 制限 / bundle 不在 / ネットワーク遮断) で
+            // ローディング状態が永続化するのを防ぐ。.catch は then の外側スコープなので
+            // recoverFromError を参照できず、直接フラグとコールバックを呼び戻す。
             console.error('[Code Grimoire] Worker init failed:', err);
+            state.isLoading = false;
+            callbacks.stopParticleLoading();
+            callbacks.updateStatusText();
         });
 }
 
@@ -134,6 +158,9 @@ export function onGraphReceived(callbacks: {
         state.nodeDegree.set(edge.target, (state.nodeDegree.get(edge.target) || 0) + 1);
     }
 
+    // v2 改修 (レビュー): ノードサイズ統計を計算し、描画と Worker で共有する。
+    state.nodeSizeStats = computeNodeSizeStats(graph.nodes);
+
     // Worker がまだ準備中なら待機フラグを立てる
     if (!state.workerReady) {
         pendingGraphInit = true;
@@ -147,6 +174,8 @@ export function onGraphReceived(callbacks: {
         ring: 'global' as const,  // 初期状態は全て global、Worker 側で割り当て
         lineCount: n.lineCount,
         fileSize: n.fileSize,
+        // v2 改修 (T-06): cycleCount メトリクス計算のため inCycle フラグを渡す
+        inCycle: n.inCycle,
     }));
 
     const workerEdges: WorkerEdge[] = graph.edges
@@ -156,10 +185,26 @@ export function onGraphReceived(callbacks: {
             target: typeof e.target === 'string' ? e.target : (e.target as any).id,
         }));
 
-    // フォーカス: まだ未選択なら最初のソースファイルを選択
+    // フォーカス: まだ未選択なら「最も繋がりの多い source ファイル」を中心に据える。
+    // graph.nodes 配列順 (= 旧実装) はファイルシステム探索順依存で不定だった。
+    // state.nodeDegree は本関数の上で既に集計済みなので、それを流用する。
     if (!state.focusNodeId) {
-        const firstSource = graph.nodes.find(n => n.kind === 'source');
-        state.focusNodeId = firstSource?.id || graph.nodes[0].id;
+        let topId: string | null = null;
+        let topDeg = -1;
+        let topLines = -1;
+        for (const n of graph.nodes) {
+            if (n.kind !== 'source') { continue; }
+            const deg = state.nodeDegree.get(n.id) ?? 0;
+            // degree 最大、同点は lineCount が多い方
+            if (deg > topDeg || (deg === topDeg && n.lineCount > topLines)) {
+                topId = n.id;
+                topDeg = deg;
+                topLines = n.lineCount;
+            }
+        }
+        state.focusNodeId = topId
+            ?? graph.nodes.find(n => n.kind === 'source')?.id
+            ?? graph.nodes[0].id;
     }
 
     sendToWorker({
@@ -170,6 +215,7 @@ export function onGraphReceived(callbacks: {
             focusNodeId: state.focusNodeId,
             layoutMode: state.layoutMode,
             bubbleSizeMode: state.bubbleSizeMode,
+            nodeSizeStats: state.nodeSizeStats,
         },
     });
 

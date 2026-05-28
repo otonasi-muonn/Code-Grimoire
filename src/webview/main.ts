@@ -59,6 +59,7 @@ import {
 import {
     setSearchContext,
     initSearchOverlay,
+    onSearchContentResponse,
 } from './ui/search.js';
 import {
     setMinimapContext,
@@ -81,6 +82,7 @@ import {
     toggleHelp,
     helpVisible,
 } from './ui/help.js';
+import { initOnboarding } from './ui/onboarding.js';
 
 // ─── Summoning (フォーカス切り替え) ──────────────────────
 function summonNode(nodeId: string) {
@@ -151,6 +153,9 @@ window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessag
                 setCurrentLang(msg.payload.language.startsWith('ja') ? 'ja' : 'en');
                 applyLocalization(refreshRuneUI);
             }
+            // v2 改修 (T-08): オンボーディングツアーは INSTANT_STRUCTURE 受信時にのみ初期化。
+            // payload に onboardingShown が含まれていれば、その値で表示有無を判定する。
+            initOnboarding(msg.payload.onboardingShown === true);
             updateStatusText();
             break;
         case 'GRAPH_DATA':
@@ -165,6 +170,9 @@ window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessag
             break;
         case 'CODE_PEEK_RESPONSE':
             onCodePeekResponse(msg.payload);
+            break;
+        case 'SEARCH_CONTENT_RESPONSE':
+            onSearchContentResponse(msg.payload);
             break;
     }
 });
@@ -190,12 +198,17 @@ let fpsText: Text;
 async function init() {
     app = new Application();
     await app.init({
+        // PixiJS v8 は preference 未指定で WebGL → WebGPU → Canvas2D に
+        // サイレントフォールバックする。展示で WebGL 描画を謳う以上、明示する。
+        preference: 'webgl',
         background: 0x080a18,
         resizeTo: window,
         antialias: true,
         resolution: window.devicePixelRatio || 1,
         autoDensity: true,
     });
+
+    console.log(`[Code Grimoire] Renderer: ${app.renderer.type}`);
 
     document.body.appendChild(app.canvas as HTMLCanvasElement);
 

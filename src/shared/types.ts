@@ -45,7 +45,34 @@ export interface GraphNode {
     treeShakingRisk?: number;
     /** 副作用インポートを含むか */
     hasSideEffects?: boolean;
+
+    // ─── v2 改修: 巨大ファイル警告 (T-03) ───────────────
+    /**
+     * 行数ベースの巨大ファイル警告レベル。
+     * - 'normal':   閾値未満
+     * - 'warning':  HUGE_FILE_LINE_THRESHOLD (500行) 以上
+     * - 'critical': MASSIVE_FILE_LINE_THRESHOLD (1000行) 以上
+     */
+    hugeFileLevel?: HugeFileLevel;
+
+    // ─── v2 改修: Git Hotspot パーセンタイル (T-05) ─────
+    /**
+     * 循環参照を持つノードのうち、commit 数で上位パーセンタイル
+     * (デフォルト 75%) に入る場合 true。Architecture Rune で強調表示。
+     */
+    isHotSpot?: boolean;
+
+    // ─── v2 改修: 直近の commit 活動分布 (P1-A) ─────────
+    /**
+     * 直近 N 期間 (デフォルト 8 期間 × 30 日 ≒ 8 ヶ月) の commit 数バケット。
+     * 配列の古い→新しい順。Detail Panel の Activity バーで実データ表示に使う。
+     * Git 履歴が無い場合は undefined。
+     */
+    gitRecentActivity?: number[];
 }
+
+/** 巨大ファイル警告レベル (v2: T-03) */
+export type HugeFileLevel = 'normal' | 'warning' | 'critical';
 
 /** シンボル情報 */
 export interface SymbolInfo {
@@ -85,16 +112,38 @@ export type EdgeKind =
 
 // ─── Phase 3: Intelligence 型定義 ──────────────────────
 
+/** セキュリティ警告の重要度 (v2: T-04) */
+export type SecuritySeverity = 'info' | 'warning' | 'critical';
+
+/** セキュリティ警告の種別 */
+export type SecurityWarningKind =
+    | 'dangerous-function'
+    | 'taint-source'
+    | 'eval-usage'
+    | 'innerHTML'
+    /** v2: Source → Sink 流入の検出 (T-07 で実装、採用時のみ) */
+    | 'taint-flow';
+
 /** セキュリティ警告 */
 export interface SecurityWarning {
     /** 警告の種類 */
-    kind: 'dangerous-function' | 'taint-source' | 'eval-usage' | 'innerHTML';
+    kind: SecurityWarningKind;
     /** 該当行 */
     line: number;
     /** 説明 */
     message: string;
     /** 対象シンボル名 */
     symbol: string;
+    /**
+     * v2 改修 (T-04): 重要度。
+     * - 'info':     process.env / fs.readFile 等の情報源
+     * - 'warning':  req.body / location.search / localStorage 等の汚染源
+     * - 'critical': eval / dangerouslySetInnerHTML / innerHTML 等の危険関数
+     *
+     * レビュー指摘により optional 化。読み込み側は未指定時 'warning' を
+     * デフォルトとして扱い、古いデータや将来追加される警告にも耐えるようにする。
+     */
+    severity?: SecuritySeverity;
 }
 
 /** 循環参照パス */
@@ -130,6 +179,11 @@ export interface GitHotspot {
     commitCount: number;
     /** 最終更新日 (ISO 8601) */
     lastModified: string;
+    /**
+     * v2 改修 (P1-A): 直近 N 期間 (デフォルト 8 期間 × 30 日) の commit 数バケット。
+     * 配列の古い→新しい順。Activity ヒートバーの実データソース。
+     */
+    recentActivity?: number[];
 }
 
 /** 解析結果グラフ全体 */
@@ -159,8 +213,18 @@ export interface MsgInstantStructure {
         fileCount: number;
         /** VS Code の UI 言語 (e.g. 'en', 'ja') */
         language: string;
+        /**
+         * v2 改修 (T-08): オンボーディングツアーを既に表示済みかどうか。
+         * Extension Host の globalState から読み出した値。
+         * true なら Webview は初回ツアーを表示しない。
+         */
+        onboardingShown?: boolean;
     };
 }
+
+// v2: MsgOnboardingState は当初設計したが、実装は INSTANT_STRUCTURE.onboardingShown 同梱で
+// 完結したため未使用となり final-architect レビュー指摘で削除。
+// 将来 Extension → Webview で動的にオンボーディング状態を通知したい場合は再追加する。
 
 /** Phase 2: 完全なグラフデータ */
 export interface MsgGraphData {
@@ -181,7 +245,8 @@ export type ExtensionToWebviewMessage =
     | MsgInstantStructure
     | MsgGraphData
     | MsgAnalysisError
-    | MsgCodePeekResponse;
+    | MsgCodePeekResponse
+    | MsgSearchContentResponse;
 
 // ─── Webview -> Extension メッセージ ───────────────────
 
@@ -215,6 +280,11 @@ export interface MsgRuneModeChange {
     };
 }
 
+/** v2: オンボーディング完了/スキップ通知 (Webview → Extension, T-08) */
+export interface MsgOnboardingDismiss {
+    type: 'ONBOARDING_DISMISS';
+}
+
 /** Code Peek: コードプレビューリクエスト (Webview → Extension) */
 export interface MsgCodePeekRequest {
     type: 'CODE_PEEK_REQUEST';
@@ -239,13 +309,39 @@ export interface MsgCodePeekResponse {
     };
 }
 
+/** ファイル内容検索リクエスト (Webview → Extension) */
+export interface MsgSearchContentRequest {
+    type: 'SEARCH_CONTENT_REQUEST';
+    payload: {
+        /** 検索クエリ (大文字小文字無視) */
+        query: string;
+        /** 競合制御用の連番。レスポンスでそのまま返るので Webview は古い結果を破棄できる */
+        requestId: number;
+    };
+}
+
+/** ファイル内容検索応答 (Extension → Webview) */
+export interface MsgSearchContentResponse {
+    type: 'SEARCH_CONTENT_RESPONSE';
+    payload: {
+        requestId: number;
+        query: string;
+        /** マッチしたファイル (グラフノード) の id 配列 */
+        matchedNodeIds: string[];
+        /** 結果上限に到達したか (UI で "+" 表示用) */
+        truncated: boolean;
+    };
+}
+
 /** Webview → Extension に送信するメッセージの Union */
 export type WebviewToExtensionMessage =
     | MsgJumpToFile
     | MsgFocusNode
     | MsgRequestAnalysis
     | MsgRuneModeChange
-    | MsgCodePeekRequest;
+    | MsgCodePeekRequest
+    | MsgOnboardingDismiss
+    | MsgSearchContentRequest;
 
 // ─── バイナリプロトコル (Transferable Objects) ─────────
 
@@ -285,6 +381,12 @@ export interface WorkerMsgInit {
         layoutMode?: LayoutMode;
         /** 泡宇宙のサイズモード — 省略時は 'lineCount' */
         bubbleSizeMode?: BubbleSizeMode;
+        /**
+         * v2 改修 (レビュー): forceCollide / Galaxy / Balloon の各レイアウトで
+         * 相対値による半径・間隔計算に使う統計。webview 側で計算して送る。
+         * 省略時 Worker 側で nodes から再計算するフォールバック。
+         */
+        nodeSizeStats?: NodeSizeStats;
     };
 }
 
@@ -353,6 +455,35 @@ export interface BubbleGroup {
     depth: number;
     /** このディレクトリ直下のファイルノードIDリスト */
     childNodeIds: string[];
+
+    // ─── v2 改修: ディレクトリヒートマップ (T-06) ─────────
+    /**
+     * 凝集度: フォルダ内部依存数 / フォルダ全体依存数。
+     * 0.0-1.0 の範囲。1.0 に近いほど内部完結度が高い。
+     * 全体依存数 = 0 のフォルダは 1.0 扱い (独立完結ファイル群)。
+     */
+    cohesion?: number;
+    /** 子ノードの平均行数 */
+    avgLineCount?: number;
+    /** 子ノードのうち inCycle = true の数 */
+    cycleCount?: number;
+}
+
+/** Bubble レイアウトのヒートマップ色付け軸 (v2: T-06) */
+export type BubbleMetric = 'cohesion' | 'avgLines' | 'cycles';
+
+/**
+ * ノード半径・リング間隔・padding を相対値で計算するための分布統計。
+ * Extension は計算せず、Webview の onGraphReceived で一度算出し
+ * graph.ts (描画) と Worker (forceCollide / Galaxy / Balloon) で共有する。
+ * すべて構造化クローン可能なプリミティブのみ。
+ */
+export interface NodeSizeStats {
+    count: number;
+    minLines: number;
+    maxLines: number;
+    medianLines: number;
+    p90Lines: number;
 }
 
 /** Worker に送る泡宇宙サイズモード変更メッセージ */
@@ -376,6 +507,11 @@ export interface WorkerNode {
     lineCount: number;
     /** ファイルサイズ (bytes) — 泡宇宙のサイズモード用 */
     fileSize?: number;
+    /**
+     * v2 改修 (T-06): 循環参照に含まれるか。
+     * BubbleGroup の cycleCount 集計用に Worker に渡す。
+     */
+    inCycle?: boolean;
     /** d3-force が利用する座標 (初期値 undefined → d3 が設定) */
     x?: number;
     y?: number;

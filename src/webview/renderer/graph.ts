@@ -6,6 +6,7 @@ import { state } from '../core/state.js';
 import { getNodeColor, getNodeGlowColor, getRingAlpha, hslToHex } from '../utils/color.js';
 import { createSmartText } from '../utils/font.js';
 import { drawDashedLine, getNodeSides, drawRingGuides, drawBubbleGroups } from '../utils/drawing.js';
+import { computeNodeRadius } from '../utils/node-size.js';
 import { animateScale, triggerClickRipple, startEdgeFlow, stopEdgeFlow } from './effects.js';
 import { dimmedNodes } from '../ui/search.js';
 import { openFolderDetailPanel } from '../ui/detail-panel.js';
@@ -24,6 +25,57 @@ let _refreshMinimap: () => void;
 /** 選択中ノードID (Detail Panel 連動) */
 export let selectedNodeId: string | null = null;
 export function setSelectedNodeId(id: string | null) { selectedNodeId = id; }
+
+// ─── Hover Tooltip (v2 レビュー) ────────────────────────
+// 200ms 遅延でノード情報 (label / lineCount / 依存数) を HTML 上に出す。
+// viewport ズームの影響を受けず、画面端での切り出しも HTML 側で制御しやすい。
+let _tooltipEl: HTMLElement | null = null;
+let _tooltipTimer: ReturnType<typeof setTimeout> | null = null;
+
+function ensureTooltipEl(): HTMLElement | null {
+    if (_tooltipEl) { return _tooltipEl; }
+    _tooltipEl = document.getElementById('node-tooltip');
+    return _tooltipEl;
+}
+
+function scheduleTooltip(node: GraphNode, clientX: number, clientY: number) {
+    if (_tooltipTimer) { clearTimeout(_tooltipTimer); }
+    _tooltipTimer = setTimeout(() => {
+        const el = ensureTooltipEl();
+        if (!el) { return; }
+        const inEdges = (state.edgesByTarget.get(node.id) || []).length;
+        const outEdges = (state.edgesBySource.get(node.id) || []).length;
+
+        // CSP P2 ルール準拠: innerHTML 直代入禁止、createElement + textContent で構築
+        while (el.firstChild) { el.removeChild(el.firstChild); }
+        const titleEl = document.createElement('div');
+        titleEl.className = 'nt-title';
+        titleEl.textContent = node.label;
+        el.appendChild(titleEl);
+        const metaEl = document.createElement('div');
+        metaEl.className = 'nt-meta';
+        metaEl.textContent = `${node.lineCount} lines · ↑${outEdges} imports · ↓${inEdges} imported`;
+        el.appendChild(metaEl);
+
+        // 画面右端で切り出されないよう、推定幅で位置を反転
+        const offsetX = 16;
+        const offsetY = -8;
+        const estWidth = 240;
+        const tx = clientX + offsetX + estWidth > window.innerWidth
+            ? clientX - offsetX - estWidth
+            : clientX + offsetX;
+        const ty = Math.max(8, clientY + offsetY);
+        el.style.left = `${tx}px`;
+        el.style.top = `${ty}px`;
+        el.classList.add('visible');
+    }, 200);
+}
+
+function hideTooltip() {
+    if (_tooltipTimer) { clearTimeout(_tooltipTimer); _tooltipTimer = null; }
+    const el = ensureTooltipEl();
+    if (el) { el.classList.remove('visible'); }
+}
 
 export function setGraphContext(ctx: {
     viewport: Viewport;
@@ -155,8 +207,14 @@ export function renderGraph() {
     const graph = state.graph;
     if (!graph) { return; }
 
+    // PixiJS Graphics の GL バッファを再利用で蓄積させないため、removeChildren より前に
+    // 旧子要素を destroy で再帰解放する。長時間運用 (展示・常駐) のリーク対策。
+    const oldNodes = [..._nodeContainer.children];
+    const oldEdges = [..._edgeContainer.children];
     _nodeContainer.removeChildren();
     _edgeContainer.removeChildren();
+    for (const c of oldNodes) { c.destroy({ children: true }); }
+    for (const c of oldEdges) { c.destroy({ children: true }); }
 
     drawRingGuides(_ringContainer);
 
@@ -357,8 +415,11 @@ function createNodeGraphics(
     const isFocus = ring === 'focus';
     const lod = state.currentLOD;
 
-    let nodeRadius = Math.max(12, Math.min(60, 8 + Math.sqrt(node.lineCount) * 3));
-    if (isFocus) { nodeRadius *= 1.4; }
+    // v2 改修 (レビュー): 描画半径を「プロジェクト全体の lineCount 分布」
+    // からの相対値で決定する。同じ式を Worker 側 forceCollide でも使うため、
+    // 描画と衝突半径が必ず一致する。100 ノードでも 10000 ノードでも
+    // ビジュアル密度がほぼ一定になる。
+    const nodeRadius = computeNodeRadius(node.lineCount, state.nodeSizeStats, isFocus);
 
     // ═══════════════════════════════════════════════════
     // LOD: Far — ドットのみ
@@ -431,7 +492,19 @@ function createNodeGraphics(
     const labelFontSize = Math.max(10, Math.min(14, nodeRadius * 0.8));
     const label = createSmartText(node.label, { fontSize: labelFontSize, fill: glowColor, align: 'center' });
     label.anchor.set(0.5, 0.5);
-    label.position.set(0, nodeRadius + 16);
+
+    // v2 改修 (レビュー): Smart Labeling 強化 — ノードの接続数で
+    // ラベル位置を上下に振り分け、密集領域での重なりを統計的に減らす。
+    // 末端 (degree 0-1) ノードは alpha を下げて「見ずらく」し、hub を優先的に
+    // 読ませる (可視化原則: 見えなくはしない)。
+    const labelDegree = state.nodeDegree.get(node.id) ?? 0;
+    const labelAbove = labelDegree >= 3;
+    label.position.set(0, labelAbove ? -(nodeRadius + 14) : nodeRadius + 16);
+    if (labelDegree === 0) {
+        label.alpha = 0.45;
+    } else if (labelDegree === 1) {
+        label.alpha = 0.65;
+    }
     container.addChild(label);
 
     let nextBadgeY = nodeRadius + 30;
@@ -443,6 +516,30 @@ function createNodeGraphics(
         nextBadgeY += 12;
     }
 
+    // ─── v2 改修 (T-03): 巨大ファイル警告 — 全 Rune モード共通 ───
+    // Rune モードの装飾より外側 (+12 / +14) に描画して干渉を避ける。
+    // 色 + 形状 (リング太さ) + ラベルの三重符号化で色弱対応 (P6)。
+    if (node.hugeFileLevel === 'warning') {
+        const hugeWarnRing = new Graphics();
+        hugeWarnRing.circle(0, 0, nodeRadius + 12);
+        hugeWarnRing.stroke({ width: 2, color: 0xffaa33, alpha: 0.7 });
+        container.addChild(hugeWarnRing);
+    } else if (node.hugeFileLevel === 'critical') {
+        const hugeCriticalRing = new Graphics();
+        hugeCriticalRing.circle(0, 0, nodeRadius + 14);
+        hugeCriticalRing.stroke({ width: 3, color: 0xff3333, alpha: 0.9 });
+        container.addChild(hugeCriticalRing);
+
+        // 行数ラベル: 色だけに頼らず文字でも危険を伝える (色弱対応)
+        const xxlLabel = new Text({
+            text: `⚠ XXXL ${node.lineCount}L`,
+            style: new TextStyle({ fontSize: 9, fill: 0xff7777, fontFamily: 'Consolas, monospace' }),
+        });
+        xxlLabel.anchor.set(0.5, 0.5);
+        xxlLabel.position.set(0, -(nodeRadius + 24));
+        container.addChild(xxlLabel);
+    }
+
     // ─── Rune モード別オーバーレイ ───────────────────────
     if (state.runeMode === 'architecture' && node.inCycle) {
         const cycleRing = new Graphics();
@@ -450,9 +547,24 @@ function createNodeGraphics(
         cycleRing.stroke({ width: 2, color: 0xff3333, alpha: 0.9 });
         container.addChild(cycleRing);
 
+        // v2 改修 (T-05): hotspot な cycle ノードは二重リング + 🔥 アイコン
+        // commit 数 75 パーセンタイル以上のノードを「修正優先度上位」として強調する。
+        if (node.isHotSpot) {
+            const hotRing = new Graphics();
+            hotRing.circle(0, 0, nodeRadius + 16);
+            hotRing.stroke({ width: 2, color: 0xff8800, alpha: 0.8 });
+            container.addChild(hotRing);
+        }
+
         const cycleLabel = new Text({
-            text: '⟳ cycle',
-            style: new TextStyle({ fontSize: 9, fill: 0xff5555, fontFamily: 'Consolas, monospace' }),
+            text: node.isHotSpot
+                ? `⟳ cycle 🔥 ${node.gitCommitCount ?? 0}c`
+                : '⟳ cycle',
+            style: new TextStyle({
+                fontSize: 9,
+                fill: node.isHotSpot ? 0xffaa33 : 0xff5555,
+                fontFamily: 'Consolas, monospace',
+            }),
         });
         cycleLabel.anchor.set(0.5, 0.5);
         cycleLabel.position.set(0, -(nodeRadius + 14));
@@ -465,15 +577,45 @@ function createNodeGraphics(
     }
 
     if (state.runeMode === 'security' && node.securityWarnings && node.securityWarnings.length > 0) {
+        // v2 改修 (T-04): severity 階層に応じてリング色・太さ・アイコンを変える
+        // 色だけでなく形状（リング太さ）とアイコンで二重符号化し、色弱対応 (P6)。
+        const hasCritical = node.securityWarnings.some(w => w.severity === 'critical');
+        const hasWarning = node.securityWarnings.some(w => w.severity === 'warning');
+
+        let ringColor: number;
+        let ringWidth: number;
+        let labelColor: number;
+        let icon: string;
+
+        if (hasCritical) {
+            // 危険関数 / innerHTML 代入等: 即時危険
+            ringColor = 0xff3333;
+            ringWidth = 3;
+            labelColor = 0xff7777;
+            icon = '⛔';
+        } else if (hasWarning) {
+            // ユーザー入力源等: 注意
+            ringColor = 0xff8800;
+            ringWidth = 3;
+            labelColor = 0xffaa33;
+            icon = '⚠';
+        } else {
+            // info レベルのみ (process.env / fs.readFile 等): 控えめ
+            ringColor = 0xffdd44;
+            ringWidth = 2;
+            labelColor = 0xffee66;
+            icon = 'ⓘ';
+        }
+
         const warnRing = new Graphics();
         warnRing.circle(0, 0, nodeRadius + 10);
-        warnRing.stroke({ width: 3, color: 0xff8800, alpha: 0.9 });
+        warnRing.stroke({ width: ringWidth, color: ringColor, alpha: 0.9 });
         container.addChild(warnRing);
 
         const warningCount = node.securityWarnings.length;
         const warnLabel = new Text({
-            text: `⚠ ${warningCount} warning${warningCount > 1 ? 's' : ''}`,
-            style: new TextStyle({ fontSize: 9, fill: 0xffaa33, fontFamily: 'Consolas, monospace' }),
+            text: `${icon} ${warningCount} ${warningCount > 1 ? 'warnings' : 'warning'}`,
+            style: new TextStyle({ fontSize: 9, fill: labelColor, fontFamily: 'Consolas, monospace' }),
         });
         warnLabel.anchor.set(0.5, 0.5);
         warnLabel.position.set(0, -(nodeRadius + 14));
@@ -565,7 +707,7 @@ function attachNodeInteraction(
 ) {
     const baseScale = container.scale.x;
 
-    container.on('pointerover', () => {
+    container.on('pointerover', (e: FederatedPointerEvent) => {
         if (dimmedNodes.size > 0) { return; }
 
         state.hoveredNodeId = node.id;
@@ -587,6 +729,9 @@ function attachNodeInteraction(
                 if (c) { c.alpha = Math.min(1.0, c.alpha + 0.4); }
             }
         }
+
+        // v2 改修 (レビュー): 200ms 遅延でホバー ツールチップを表示
+        scheduleTooltip(node, e.clientX ?? 0, e.clientY ?? 0);
     });
 
     container.on('pointerout', () => {
@@ -607,6 +752,8 @@ function attachNodeInteraction(
             }
         }
         state.glowConnectedIds.clear();
+
+        hideTooltip();
     });
 
     container.on('pointertap', (e: FederatedPointerEvent) => {

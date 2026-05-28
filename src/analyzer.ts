@@ -4,7 +4,8 @@
 import * as ts from 'typescript';
 import * as path from 'path';
 import * as fs from 'fs';
-import { execSync } from 'child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type {
     DependencyGraph,
     GraphNode,
@@ -13,27 +14,82 @@ import type {
     NodeKind,
     EdgeKind,
     SecurityWarning,
+    SecurityWarningKind,
+    SecuritySeverity,
     CircularDependency,
     GitHotspot,
 } from './shared/types.js';
+
+// ─── v2 改修: 巨大ファイル警告の閾値 (T-03) ─────────────
+/** 警告レベル: 500 行以上で `warning` */
+const HUGE_FILE_LINE_THRESHOLD = 500;
+/** 危険レベル: 1000 行以上で `critical` */
+const MASSIVE_FILE_LINE_THRESHOLD = 1000;
+
+// ─── v2 改修: Git Hotspot パーセンタイル設定 (T-05) ─────
+/** Hotspot 判定のパーセンタイル (0.0-1.0)。0.75 = 上位 25% */
+const HOTSPOT_PERCENTILE = 0.75;
+/** パーセンタイル算出を有効にする最小ノード数 (下限ガード) */
+const HOTSPOT_MIN_SAMPLE = 5;
+
+// ─── v2 改修: 直近 commit 活動バケット (P1-A) ───────────
+/** 1 バケットあたりの日数。30 日 = 約 1 ヶ月 */
+const ACTIVITY_BUCKET_DAYS = 30;
+/** バケット数。8 個 = 約 8 ヶ月分の commit 履歴 */
+const ACTIVITY_BUCKET_COUNT = 8;
+
+// ─── v2 改修: Multi-tsconfig 対応 (P0) ───────────────────
+/**
+ * 複数 tsconfig 構成プロジェクト (Extension/Webview 分離・monorepo・Next.js 等)
+ * で全ファイルを取りこぼさないために、ワークスペース内の tsconfig*.json を再帰探索する。
+ */
+const TSCONFIG_SKIP_DIRS = new Set([
+    'node_modules', '.git', 'out', 'dist', 'build', '.next', '.nuxt', '.turbo', '.cache',
+]);
+
+// execFile を Promise 化。execSync の代わりに使い、Extension Host のブロックを避ける。
+const execFileAsync = promisify(execFile);
 
 // ─── Public API ─────────────────────────────────────────
 
 /**
  * ワークスペースルートから tsconfig.json を自動検出し、
  * TS Compiler API でファイル依存グラフを解析する。
+ *
+ * v2 改修 (P0): ワークスペース内に tsconfig が複数ある場合 (Extension/Webview 分離、
+ * monorepo の packages/*、Next.js の pages/server 分離 等) は、全 tsconfig の
+ * fileNames を union して 1 つの Program で解析する。これにより、特定の tsconfig が
+ * `exclude: ["src/webview/**\/*"]` のように一部を除外していても取りこぼさない。
  */
-export function analyzeWorkspace(workspaceRoot: string): DependencyGraph {
+export async function analyzeWorkspace(workspaceRoot: string): Promise<DependencyGraph> {
     const startTime = performance.now();
 
-    // 1. tsconfig.json の自動検出
-    const tsconfigPath = findTsConfig(workspaceRoot);
-    if (!tsconfigPath) {
-        // tsconfig が無い場合は workspaceRoot 配下の .ts ファイルを直接解析
+    // 1. ワークスペース内の全 tsconfig*.json を探索
+    const allTsConfigs = findAllTsConfigs(workspaceRoot);
+
+    if (allTsConfigs.length === 0) {
+        // tsconfig が一つも無い → 単純なフォールバック
         return analyzeFiles(workspaceRoot, getSourceFiles(workspaceRoot), startTime);
     }
 
-    // 2. tsconfig.json を読み込んでプログラム生成
+    if (allTsConfigs.length >= 2) {
+        // 複数 tsconfig: 全ファイルを union して 1 つの Program で解析
+        return analyzeMultipleTsConfigs(allTsConfigs, workspaceRoot, startTime);
+    }
+
+    // 単一 tsconfig: 既存の処理 (Project References パターン対応含む)
+    return analyzeSingleTsConfig(allTsConfigs[0], workspaceRoot, startTime);
+}
+
+/**
+ * 単一 tsconfig からの解析。
+ * Project References パターン (`files: []` + `references: [...]`) に対応。
+ */
+async function analyzeSingleTsConfig(
+    tsconfigPath: string,
+    workspaceRoot: string,
+    startTime: number
+): Promise<DependencyGraph> {
     const configFile = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
     if (configFile.error) {
         console.error('tsconfig read error:', ts.flattenDiagnosticMessageText(configFile.error.messageText, '\n'));
@@ -62,18 +118,17 @@ export function analyzeWorkspace(workspaceRoot: string): DependencyGraph {
         options: parsedConfig.options,
     });
 
-    // 3. グラフの構築
     return buildGraph(program, workspaceRoot, startTime);
 }
 
 // ─── Project References パターン対応 ────────────────────
 
-function analyzeProjectReferences(
+async function analyzeProjectReferences(
     tsconfigPath: string,
     references: Array<{ path: string }>,
     workspaceRoot: string,
     startTime: number
-): DependencyGraph {
+): Promise<DependencyGraph> {
     const tsconfigDir = path.dirname(tsconfigPath);
     const allFileNames: string[] = [];
     let mergedOptions: ts.CompilerOptions = {};
@@ -118,11 +173,134 @@ function analyzeProjectReferences(
     return buildGraph(program, workspaceRoot, startTime);
 }
 
-// ─── tsconfig 自動検出 ──────────────────────────────────
+// ─── Multi-tsconfig 解析 (v2 改修: P0) ───────────────────
 
-function findTsConfig(root: string): string | undefined {
-    const candidate = ts.findConfigFile(root, ts.sys.fileExists, 'tsconfig.json');
-    return candidate;
+/**
+ * ワークスペース配下の tsconfig*.json を再帰的に全て発見する。
+ * node_modules / 出力ディレクトリ / .git 等はスキップ。
+ */
+function findAllTsConfigs(root: string): string[] {
+    const found: string[] = [];
+    const walk = (dir: string) => {
+        let entries: fs.Dirent[];
+        try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+        } catch {
+            return;
+        }
+        for (const entry of entries) {
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+                if (TSCONFIG_SKIP_DIRS.has(entry.name)) { continue; }
+                walk(full);
+            } else if (entry.isFile() && /^tsconfig.*\.json$/.test(entry.name)) {
+                found.push(full);
+            }
+        }
+    };
+    walk(root);
+    return found;
+}
+
+/**
+ * 複数 tsconfig 構成のプロジェクトを解析する。
+ * 各 tsconfig の fileNames を union して 1 つの Program を作成。
+ * 各 tsconfig の compilerOptions はマージして使う (依存グラフ抽出が目的なので厳密な型チェックは不要)。
+ */
+async function analyzeMultipleTsConfigs(
+    tsconfigPaths: string[],
+    workspaceRoot: string,
+    startTime: number
+): Promise<DependencyGraph> {
+    const allFileNames = new Set<string>();
+    const collectedOptions: ts.CompilerOptions[] = [];
+
+    for (const tsconfigPath of tsconfigPaths) {
+        const configFile = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+        if (configFile.error) {
+            console.warn(`[Code Grimoire] tsconfig read failed: ${tsconfigPath}`);
+            continue;
+        }
+
+        // extends を含む tsconfig も ts.parseJsonConfigFileContent が解決する
+        const parsed = ts.parseJsonConfigFileContent(
+            configFile.config,
+            ts.sys,
+            path.dirname(tsconfigPath)
+        );
+
+        for (const f of parsed.fileNames) {
+            allFileNames.add(path.normalize(f));
+        }
+        collectedOptions.push(parsed.options);
+    }
+
+    if (allFileNames.size === 0) {
+        // どの tsconfig からもファイルが取れない → フォールバック
+        return analyzeFiles(workspaceRoot, getSourceFiles(workspaceRoot), startTime);
+    }
+
+    const mergedOptions = mergeCompilerOptions(collectedOptions);
+
+    const program = ts.createProgram({
+        rootNames: Array.from(allFileNames),
+        options: mergedOptions,
+    });
+
+    return buildGraph(program, workspaceRoot, startTime);
+}
+
+/**
+ * 複数 tsconfig の compilerOptions をマージする。
+ * - lib: 全 tsconfig の union (Node + DOM など両環境を許容)
+ * - module / moduleResolution: 最初の有効値
+ * - target: 最も新しい値
+ * - paths / baseUrl: 最初の有効値
+ * - strict: 解析時は不要なので false 寄せ (型エラーで Program 生成が止まるのを防ぐ)
+ * - skipLibCheck / allowJs / esModuleInterop: 常に有効
+ */
+function mergeCompilerOptions(allOpts: ts.CompilerOptions[]): ts.CompilerOptions {
+    const merged: ts.CompilerOptions = {
+        target: ts.ScriptTarget.ES2022,
+        skipLibCheck: true,
+        allowJs: true,
+        esModuleInterop: true,
+        strict: false,
+    };
+
+    const libs = new Set<string>();
+    for (const opts of allOpts) {
+        if (opts.lib) {
+            for (const lib of opts.lib) { libs.add(lib); }
+        }
+        if (merged.module === undefined && opts.module !== undefined) {
+            merged.module = opts.module;
+        }
+        if (merged.moduleResolution === undefined && opts.moduleResolution !== undefined) {
+            merged.moduleResolution = opts.moduleResolution;
+        }
+        if (opts.target !== undefined && opts.target > (merged.target ?? ts.ScriptTarget.ES2022)) {
+            merged.target = opts.target;
+        }
+        if (opts.paths && !merged.paths) {
+            merged.paths = opts.paths;
+        }
+        if (opts.baseUrl && !merged.baseUrl) {
+            merged.baseUrl = opts.baseUrl;
+        }
+        if (opts.jsx !== undefined && merged.jsx === undefined) {
+            merged.jsx = opts.jsx;
+        }
+    }
+
+    if (libs.size > 0) {
+        merged.lib = Array.from(libs);
+    } else {
+        // どの tsconfig にも lib 指定がない場合のデフォルト
+        merged.lib = ['ES2022', 'DOM', 'DOM.Iterable'];
+    }
+
+    return merged;
 }
 
 // ─── tsconfig が無い場合のフォールバック ─────────────────
@@ -146,7 +324,7 @@ function getSourceFiles(root: string): string[] {
     return files;
 }
 
-function analyzeFiles(root: string, files: string[], startTime: number): DependencyGraph {
+async function analyzeFiles(root: string, files: string[], startTime: number): Promise<DependencyGraph> {
     const program = ts.createProgram({
         rootNames: files,
         options: {
@@ -160,7 +338,7 @@ function analyzeFiles(root: string, files: string[], startTime: number): Depende
 
 // ─── グラフ構築のコアロジック ────────────────────────────
 
-function buildGraph(program: ts.Program, workspaceRoot: string, startTime: number): DependencyGraph {
+async function buildGraph(program: ts.Program, workspaceRoot: string, startTime: number): Promise<DependencyGraph> {
     const checker = program.getTypeChecker();
     const nodes: Map<string, GraphNode> = new Map();
     const edges: GraphEdge[] = [];
@@ -234,7 +412,7 @@ function buildGraph(program: ts.Program, workspaceRoot: string, startTime: numbe
     applyOptimizationMetrics(nodes, edges);
 
     // Phase 3: Git Hotspot 統合
-    const gitHotspots = applyGitHotspots(nodes, workspaceRoot);
+    const gitHotspots = await applyGitHotspots(nodes, workspaceRoot);
 
     const analysisTimeMs = Math.round(performance.now() - startTime);
 
@@ -402,47 +580,96 @@ function getImportEdgeKind(node: ts.ImportDeclaration): EdgeKind {
 
 // ─── Phase 3: セキュリティ警告検出 ──────────────────────
 
-/** 危険なパターンを検出する */
-const DANGEROUS_FUNCTIONS: Record<string, SecurityWarning['kind']> = {
-    'eval': 'eval-usage',
-    'Function': 'eval-usage',
-    'dangerouslySetInnerHTML': 'innerHTML',
-    'innerHTML': 'innerHTML',
-    'outerHTML': 'innerHTML',
-    'document.write': 'dangerous-function',
-    'document.writeln': 'dangerous-function',
-};
-
-/** Taint ソースとなる API — PropertyAccess チェーンで検出 */
-const TAINT_PROPERTY_CHAINS: Array<{ chain: string[]; label: string }> = [
-    { chain: ['req', 'body'],     label: 'req.body' },
-    { chain: ['req', 'query'],    label: 'req.query' },
-    { chain: ['req', 'params'],   label: 'req.params' },
-    { chain: ['req', 'headers'],  label: 'req.headers' },
-    { chain: ['location', 'search'], label: 'location.search' },
-    { chain: ['location', 'hash'],   label: 'location.hash' },
-    { chain: ['location', 'href'],   label: 'location.href' },
-    { chain: ['document', 'cookie'], label: 'document.cookie' },
-    { chain: ['window', 'name'],     label: 'window.name' },
+/**
+ * 危険なパターンを検出する。v2 改修 (T-04): severity を必須化。
+ * - eval / Function / innerHTML 系は critical (即時危険)
+ * - document.write は critical (動的 HTML 注入)
+ */
+const DANGEROUS_FUNCTIONS: Array<{ pattern: string; kind: SecurityWarningKind; severity: SecuritySeverity }> = [
+    { pattern: 'eval',                    kind: 'eval-usage',         severity: 'critical' },
+    { pattern: 'Function',                kind: 'eval-usage',         severity: 'critical' },
+    { pattern: 'dangerouslySetInnerHTML', kind: 'innerHTML',          severity: 'critical' },
+    { pattern: 'innerHTML',               kind: 'innerHTML',          severity: 'critical' },
+    { pattern: 'outerHTML',               kind: 'innerHTML',          severity: 'critical' },
+    { pattern: 'document.write',          kind: 'dangerous-function', severity: 'critical' },
+    { pattern: 'document.writeln',        kind: 'dangerous-function', severity: 'critical' },
 ];
 
-/** Taint ソースとなる単独 Identifier */
-const TAINT_IDENTIFIERS = new Set([
-    'localStorage', 'sessionStorage', 'postMessage',
-    'URLSearchParams', 'FormData',
+/**
+ * Taint ソースとなる API — PropertyAccess チェーンで検出。
+ * v2 改修 (T-04): severity を付与。process.env / process.argv は info レベルで誤検出を抑制。
+ */
+const TAINT_PROPERTY_CHAINS: Array<{ chain: string[]; label: string; severity: SecuritySeverity }> = [
+    { chain: ['req', 'body'],        label: 'req.body',        severity: 'warning' },
+    { chain: ['req', 'query'],       label: 'req.query',       severity: 'warning' },
+    { chain: ['req', 'params'],      label: 'req.params',      severity: 'warning' },
+    { chain: ['req', 'headers'],     label: 'req.headers',     severity: 'warning' },
+    { chain: ['location', 'search'], label: 'location.search', severity: 'warning' },
+    { chain: ['location', 'hash'],   label: 'location.hash',   severity: 'warning' },
+    { chain: ['location', 'href'],   label: 'location.href',   severity: 'warning' },
+    { chain: ['document', 'cookie'], label: 'document.cookie', severity: 'warning' },
+    { chain: ['window', 'name'],     label: 'window.name',     severity: 'warning' },
+    // v2 追加: 情報源としての process は赤くせず info レベル
+    { chain: ['process', 'env'],     label: 'process.env',     severity: 'info' },
+    { chain: ['process', 'argv'],    label: 'process.argv',    severity: 'info' },
+];
+
+/**
+ * Taint ソースとなる単独 Identifier。
+ * v2 改修 (T-04): severity を付与した Map に変更。
+ */
+const TAINT_IDENTIFIERS = new Map<string, SecuritySeverity>([
+    ['localStorage',    'warning'],
+    ['sessionStorage',  'warning'],
+    ['postMessage',     'warning'],
+    ['URLSearchParams', 'warning'],
+    ['FormData',        'warning'],
 ]);
+
+/**
+ * v2 改修 (T-04): CallExpression ベースの Taint Source 検出。
+ * fs.readFile / fetch などは「情報源だが直ちに危険ではない」ため info レベル。
+ */
+const TAINT_CALL_PATTERNS: Array<{ pattern: string; severity: SecuritySeverity }> = [
+    { pattern: 'fs.readFile',          severity: 'info' },
+    { pattern: 'fs.readFileSync',      severity: 'info' },
+    { pattern: 'fs.promises.readFile', severity: 'info' },
+    { pattern: 'fetch',                severity: 'info' },
+];
 
 function collectSecurityWarnings(sourceFile: ts.SourceFile): SecurityWarning[] {
     const warnings: SecurityWarning[] = [];
 
     const visit = (node: ts.Node) => {
-        // CallExpression: eval(...), Function(...) 等
+        // CallExpression: eval(...), Function(...), fs.readFile(...) 等
         if (ts.isCallExpression(node)) {
             const callText = node.expression.getText(sourceFile);
-            for (const [pattern, kind] of Object.entries(DANGEROUS_FUNCTIONS)) {
-                if (callText === pattern || callText.endsWith('.' + pattern)) {
+
+            // v2: 危険関数の検出 (critical)
+            for (const df of DANGEROUS_FUNCTIONS) {
+                if (callText === df.pattern || callText.endsWith('.' + df.pattern)) {
                     const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
-                    warnings.push({ kind, line, message: `Dangerous: ${pattern}()`, symbol: pattern });
+                    warnings.push({
+                        kind: df.kind,
+                        line,
+                        message: `Dangerous: ${df.pattern}()`,
+                        symbol: df.pattern,
+                        severity: df.severity,
+                    });
+                }
+            }
+
+            // v2 追加 (T-04): Taint Source となる CallExpression (info)
+            for (const tc of TAINT_CALL_PATTERNS) {
+                if (callText === tc.pattern || callText.endsWith('.' + tc.pattern)) {
+                    const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+                    warnings.push({
+                        kind: 'taint-source',
+                        line,
+                        message: `Taint source: ${tc.pattern}()`,
+                        symbol: tc.pattern,
+                        severity: tc.severity,
+                    });
                 }
             }
         }
@@ -451,7 +678,7 @@ function collectSecurityWarnings(sourceFile: ts.SourceFile): SecurityWarning[] {
         if (ts.isPropertyAccessExpression(node)) {
             const propName = node.name.text;
 
-            // innerHTML / outerHTML 代入チェック
+            // innerHTML / outerHTML 代入チェック (critical)
             if (propName === 'innerHTML' || propName === 'outerHTML') {
                 if (node.parent && ts.isBinaryExpression(node.parent) &&
                     node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
@@ -461,6 +688,7 @@ function collectSecurityWarnings(sourceFile: ts.SourceFile): SecurityWarning[] {
                         line,
                         message: `Direct ${propName} assignment`,
                         symbol: propName,
+                        severity: 'critical',
                     });
                 }
             }
@@ -476,6 +704,7 @@ function collectSecurityWarnings(sourceFile: ts.SourceFile): SecurityWarning[] {
                             line,
                             message: `Taint source: ${tc.label}`,
                             symbol: tc.label,
+                            severity: tc.severity,
                         });
                     }
                 }
@@ -490,16 +719,18 @@ function collectSecurityWarnings(sourceFile: ts.SourceFile): SecurityWarning[] {
                 !ts.isParameter(node.parent) &&
                 !ts.isPropertyDeclaration(node.parent)) {
                 const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+                const severity = TAINT_IDENTIFIERS.get(node.text) ?? 'warning';
                 warnings.push({
                     kind: 'taint-source',
                     line,
                     message: `Taint source: ${node.text}`,
                     symbol: node.text,
+                    severity,
                 });
             }
         }
 
-        // JSX: dangerouslySetInnerHTML
+        // JSX: dangerouslySetInnerHTML (critical)
         if (ts.isJsxAttribute(node) && ts.isIdentifier(node.name) && node.name.text === 'dangerouslySetInnerHTML') {
             const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
             warnings.push({
@@ -507,6 +738,7 @@ function collectSecurityWarnings(sourceFile: ts.SourceFile): SecurityWarning[] {
                 line,
                 message: 'React dangerouslySetInnerHTML',
                 symbol: 'dangerouslySetInnerHTML',
+                severity: 'critical',
             });
         }
 
@@ -519,6 +751,24 @@ function collectSecurityWarnings(sourceFile: ts.SourceFile): SecurityWarning[] {
 
 // ─── Phase 3: 循環参照検出 (Tarjan's SCC) ──────────────
 
+/**
+ * Tarjan's Strongly Connected Components algorithm — **反復版**。
+ *
+ * もとは再帰実装だったが、深い import チェーン (10k+ ファイルが線形に依存) で
+ * Node.js のスタックを使い切って RangeError: Maximum call stack を吐く可能性が
+ * あったため、明示的な work-stack を持つ反復版に置き換える (lessons L11)。
+ *
+ * 出力 (どの SCC が検出されるか、各 SCC のメンバー) は再帰版と等価。
+ * 隣接リスト走査順序を保つため、各フレームに `neighbors` (= adj[v] のスナップ
+ * ショット) と `nextIdx` を保持し、再帰の代わりに `work.push` で潜行する。
+ *
+ * 再帰版との対応:
+ *   strongConnect(v) の前半 (index 採番 + stack push) → フレーム push 時に実施
+ *   for (const w of adj[v]) の各 iteration → フレームの nextIdx を進める
+ *   strongConnect(w) 呼び出し → 子フレームを push して次ループで処理
+ *   再帰戻り後の lowlink 伝播 → 子フレーム pop 時に親フレームへ反映
+ *   SCC ルート判定 (lowlink == index) → フレーム pop 時に実施
+ */
 function detectCircularDependencies(
     nodes: Map<string, GraphNode>,
     edges: GraphEdge[]
@@ -534,7 +784,6 @@ function detectCircularDependencies(
         }
     }
 
-    // Tarjan's SCC
     let index = 0;
     const stack: string[] = [];
     const onStack = new Set<string>();
@@ -542,23 +791,25 @@ function detectCircularDependencies(
     const lowlinks = new Map<string, number>();
     const sccs: string[][] = [];
 
-    function strongConnect(v: string) {
+    /** DFS 用ワークスタック (再帰呼び出しの代替) */
+    interface Frame {
+        v: string;
+        neighbors: string[];
+        nextIdx: number;
+    }
+    const work: Frame[] = [];
+
+    const beginNode = (v: string): void => {
         indices.set(v, index);
         lowlinks.set(v, index);
         index++;
         stack.push(v);
         onStack.add(v);
+        work.push({ v, neighbors: adj.get(v) ?? [], nextIdx: 0 });
+    };
 
-        for (const w of adj.get(v) || []) {
-            if (!indices.has(w)) {
-                strongConnect(w);
-                lowlinks.set(v, Math.min(lowlinks.get(v)!, lowlinks.get(w)!));
-            } else if (onStack.has(w)) {
-                lowlinks.set(v, Math.min(lowlinks.get(v)!, indices.get(w)!));
-            }
-        }
-
-        // SCC のルート
+    const finishNode = (v: string): void => {
+        // SCC ルート判定: lowlink == index ならスタックを v までポップして 1 つの SCC
         if (lowlinks.get(v) === indices.get(v)) {
             const scc: string[] = [];
             let w: string;
@@ -568,16 +819,39 @@ function detectCircularDependencies(
                 scc.push(w);
             } while (w !== v);
 
-            // サイズ2以上のSCCのみ（= 実際の循環参照）
+            // サイズ 2 以上の SCC のみ (= 実際の循環参照)
             if (scc.length >= 2) {
                 sccs.push(scc);
             }
         }
-    }
+    };
 
-    for (const v of nodes.keys()) {
-        if (!indices.has(v)) {
-            strongConnect(v);
+    for (const root of nodes.keys()) {
+        if (indices.has(root)) { continue; }
+
+        beginNode(root);
+
+        while (work.length > 0) {
+            const frame = work[work.length - 1];
+
+            if (frame.nextIdx < frame.neighbors.length) {
+                const w = frame.neighbors[frame.nextIdx++];
+                if (!indices.has(w)) {
+                    // 再帰呼び出しに相当: 子ノードを開始し、戻ったら親の lowlink を更新する
+                    beginNode(w);
+                } else if (onStack.has(w)) {
+                    lowlinks.set(frame.v, Math.min(lowlinks.get(frame.v)!, indices.get(w)!));
+                }
+            } else {
+                // 全 neighbors 処理完了 — フレームを閉じる
+                work.pop();
+                finishNode(frame.v);
+                // 親フレームへ lowlink を伝播 (再帰版の strongConnect(w) 戻り直後の処理)
+                if (work.length > 0) {
+                    const parent = work[work.length - 1];
+                    lowlinks.set(parent.v, Math.min(lowlinks.get(parent.v)!, lowlinks.get(frame.v)!));
+                }
+            }
         }
     }
 
@@ -610,6 +884,13 @@ function applyOptimizationMetrics(
     }
 
     for (const node of nodes.values()) {
+        // ─── v2 改修 (T-03): 巨大ファイル警告レベル先行判定 ──
+        // 行数に基づく警告レベルを最初に確定させ、後続の risk 計算でも参照する。
+        node.hugeFileLevel =
+            node.lineCount >= MASSIVE_FILE_LINE_THRESHOLD ? 'critical' :
+            node.lineCount >= HUGE_FILE_LINE_THRESHOLD ? 'warning' :
+            'normal';
+
         // ─── Barrel 検出 ──────────────────────────────
         // index.ts/index.tsx で、re-export エッジが多く、自前のエクスポートが少ないファイル
         const isIndexFile = /index\.(ts|tsx|js|jsx)$/.test(node.label);
@@ -639,8 +920,14 @@ function applyOptimizationMetrics(
         // Barrel ファイル = 巻き込みリスク
         if (node.isBarrel) { risk += 20; }
 
-        // 行数が多いのにエクスポートが少ない = 大きなファイルが丸ごと残るリスク
-        if (node.lineCount > 200 && exportCount <= 2) {
+        // ─── v2 改修 (T-03): hugeFileLevel ベースのリスク計算 ──
+        // 旧: lineCount > 200 && exportCount <= 2 で +15 のハードコード判定
+        // 新: hugeFileLevel から二段階で算出し、重複計算を防ぐ
+        if (node.hugeFileLevel === 'critical') {
+            // 1000 行超: エクスポート数に関係なく重い
+            risk += 25;
+        } else if (node.hugeFileLevel === 'warning' && exportCount <= 2) {
+            // 500-999 行 + エクスポート少 = 旧判定に相当する状況
             risk += 15;
         }
 
@@ -650,7 +937,7 @@ function applyOptimizationMetrics(
 
 // ─── Phase 3: Git Hotspot ────────────────────────────────
 
-function collectGitHotspots(workspaceRoot: string): Map<string, GitHotspot> {
+async function collectGitHotspots(workspaceRoot: string): Promise<Map<string, GitHotspot>> {
     const hotspots = new Map<string, GitHotspot>();
 
     try {
@@ -659,15 +946,32 @@ function collectGitHotspots(workspaceRoot: string): Map<string, GitHotspot> {
             return hotspots;
         }
 
-        // ファイルごとの commit 数を取得
-        // git log --format="%H" --name-only で commit hash + ファイル名を取得
-        const result = execSync(
-            'git log --format="---COMMIT---%aI" --name-only --diff-filter=ACDMR --no-renames -- "*.ts" "*.tsx" "*.js" "*.jsx"',
+        // ファイルごとの commit 数を取得 (execFileAsync: shell を介さず Extension Host も非ブロック)
+        // 末尾の glob は git の pathspec として渡るため、シェル展開は不要。
+        const { stdout: result } = await execFileAsync(
+            'git',
+            [
+                'log',
+                '--format=---COMMIT---%aI',
+                '--name-only',
+                '--diff-filter=ACDMR',
+                '--no-renames',
+                '--',
+                '*.ts', '*.tsx', '*.js', '*.jsx',
+            ],
             { cwd: workspaceRoot, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, timeout: 15000 }
         );
 
         let currentDate = '';
-        const fileDateMap = new Map<string, { count: number; lastDate: string }>();
+        const fileDateMap = new Map<string, {
+            count: number;
+            lastDate: string;
+            /** v2 改修 (P1-A): 直近 N 期間の commit 数バケット (古い→新しい順) */
+            activity: number[];
+        }>();
+
+        const nowMs = Date.now();
+        const bucketMs = ACTIVITY_BUCKET_DAYS * 86_400_000;
 
         for (const line of result.split('\n')) {
             if (line.startsWith('---COMMIT---')) {
@@ -676,6 +980,18 @@ function collectGitHotspots(workspaceRoot: string): Map<string, GitHotspot> {
             }
             const trimmed = line.trim();
             if (!trimmed || trimmed.length === 0) { continue; }
+
+            // v2 改修 (P1-A): 現在の commit のバケットインデックス
+            // BUCKET_COUNT - 1 = 直近、0 = 最古
+            let bucketIdx = -1;
+            const commitMs = new Date(currentDate).getTime();
+            if (Number.isFinite(commitMs)) {
+                const ageMs = nowMs - commitMs;
+                const bucketsAgo = Math.floor(ageMs / bucketMs);
+                if (bucketsAgo >= 0 && bucketsAgo < ACTIVITY_BUCKET_COUNT) {
+                    bucketIdx = ACTIVITY_BUCKET_COUNT - 1 - bucketsAgo;
+                }
+            }
 
             // 相対パスを正規化
             const relPath = trimmed.replace(/\\/g, '/');
@@ -686,8 +1002,15 @@ function collectGitHotspots(workspaceRoot: string): Map<string, GitHotspot> {
                 if (currentDate > existing.lastDate) {
                     existing.lastDate = currentDate;
                 }
+                if (bucketIdx >= 0) {
+                    existing.activity[bucketIdx]++;
+                }
             } else {
-                fileDateMap.set(relPath, { count: 1, lastDate: currentDate });
+                const activity = new Array(ACTIVITY_BUCKET_COUNT).fill(0) as number[];
+                if (bucketIdx >= 0) {
+                    activity[bucketIdx] = 1;
+                }
+                fileDateMap.set(relPath, { count: 1, lastDate: currentDate, activity });
             }
         }
 
@@ -696,6 +1019,7 @@ function collectGitHotspots(workspaceRoot: string): Map<string, GitHotspot> {
                 relativePath: relPath,
                 commitCount: data.count,
                 lastModified: data.lastDate,
+                recentActivity: data.activity,
             });
         }
     } catch (err) {
@@ -705,18 +1029,43 @@ function collectGitHotspots(workspaceRoot: string): Map<string, GitHotspot> {
     return hotspots;
 }
 
-/** Git Hotspot をグラフノードに適用 */
-function applyGitHotspots(
+/**
+ * Git Hotspot をグラフノードに適用。
+ * v2 改修 (T-05): commit 数のパーセンタイル方式で isHotSpot フラグを付与する。
+ * - サンプル数が HOTSPOT_MIN_SAMPLE 未満の小規模リポジトリではフラグを立てない (誤検出回避)
+ * - 上位 HOTSPOT_PERCENTILE 以上の commit 数を持つノードに isHotSpot = true
+ */
+async function applyGitHotspots(
     nodes: Map<string, GraphNode>,
     workspaceRoot: string
-): GitHotspot[] {
-    const hotspots = collectGitHotspots(workspaceRoot);
+): Promise<GitHotspot[]> {
+    const hotspots = await collectGitHotspots(workspaceRoot);
 
     for (const node of nodes.values()) {
         const hotspot = hotspots.get(node.relativePath);
         if (hotspot) {
             node.gitCommitCount = hotspot.commitCount;
             node.gitLastModified = hotspot.lastModified;
+            // v2 改修 (P1-A): 直近活動バケットをノードに付与
+            node.gitRecentActivity = hotspot.recentActivity;
+        }
+    }
+
+    // v2 改修 (T-05): commit 数からパーセンタイル閾値を算出して isHotSpot を付与
+    const commitCounts = Array.from(nodes.values())
+        .map(n => n.gitCommitCount ?? 0)
+        .filter(c => c > 0)
+        .sort((a, b) => a - b);
+
+    // 下限ガード: サンプル数が極端に少ない場合はパーセンタイルが意味を成さない
+    if (commitCounts.length >= HOTSPOT_MIN_SAMPLE) {
+        const idx = Math.floor(commitCounts.length * HOTSPOT_PERCENTILE);
+        const threshold = commitCounts[Math.min(idx, commitCounts.length - 1)];
+
+        if (threshold !== undefined && threshold > 0) {
+            for (const node of nodes.values()) {
+                node.isHotSpot = (node.gitCommitCount ?? 0) >= threshold;
+            }
         }
     }
 

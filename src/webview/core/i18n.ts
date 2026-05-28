@@ -4,11 +4,12 @@ export type TranslationKey =
     | 'rune.default' | 'rune.architecture' | 'rune.security' | 'rune.optimization' | 'rune.analysis'
     | 'layout.mandala' | 'layout.galaxy' | 'layout.bubble'
     | 'bubble.size.lineCount' | 'bubble.size.fileSize'
+    | 'bubble.metric.cohesion' | 'bubble.metric.avgLines' | 'bubble.metric.cycles'
     | 'dp.path' | 'dp.info' | 'dp.git' | 'dp.exports' | 'dp.imports' | 'dp.importedBy'
     | 'dp.securityWarnings' | 'dp.optimization' | 'dp.codePreview'
     | 'dp.dataFlow'
     | 'dp.folder' | 'dp.folderFiles' | 'dp.folderStats'
-    | 'search.placeholder' | 'search.matches'
+    | 'search.placeholder' | 'search.matches' | 'search.byName' | 'search.byContent'
     | 'status.computing' | 'status.awaiting'
     | 'loading.summoning'
     | 'help.title' | 'help.mouse' | 'help.keyboard' | 'help.legend'
@@ -26,6 +27,9 @@ const translations: Record<string, Record<TranslationKey, string>> = {
         'layout.bubble': '◉ Bubble',
         'bubble.size.lineCount': '📏 Lines',
         'bubble.size.fileSize': '📦 Size',
+        'bubble.metric.cohesion': '🧬 Cohesion',
+        'bubble.metric.avgLines': '📏 Avg Lines',
+        'bubble.metric.cycles': '⟳ Cycles',
         'dp.path': 'Path',
         'dp.info': 'Info',
         'dp.git': 'Git',
@@ -39,8 +43,10 @@ const translations: Record<string, Record<TranslationKey, string>> = {
         'dp.folder': 'Folder',
         'dp.folderFiles': 'Files',
         'dp.folderStats': 'Statistics',
-        'search.placeholder': 'Search files... (Ctrl+F)',
+        'search.placeholder': 'Search files & content... (Ctrl+F)',
         'search.matches': 'matches',
+        'search.byName': 'name',
+        'search.byContent': 'content',
         'status.computing': 'Computing layout...',
         'status.awaiting': 'Awaiting analysis...',
         'loading.summoning': '⟐ Summoning the Magic Circle...',
@@ -65,6 +71,9 @@ const translations: Record<string, Record<TranslationKey, string>> = {
         'layout.bubble': '◉ 泡宇宙 (Bubble)',
         'bubble.size.lineCount': '📏 行数',
         'bubble.size.fileSize': '📦 サイズ',
+        'bubble.metric.cohesion': '🧬 凝集度',
+        'bubble.metric.avgLines': '📏 平均行数',
+        'bubble.metric.cycles': '⟳ 循環数',
         'dp.path': 'パス',
         'dp.info': '情報',
         'dp.git': 'Git',
@@ -78,8 +87,10 @@ const translations: Record<string, Record<TranslationKey, string>> = {
         'dp.folder': 'フォルダ',
         'dp.folderFiles': '配下ファイル',
         'dp.folderStats': '統計',
-        'search.placeholder': 'ファイルを検索... (Ctrl+F)',
+        'search.placeholder': 'ファイル名・内容を検索... (Ctrl+F)',
         'search.matches': '件',
+        'search.byName': '名前',
+        'search.byContent': '内容',
         'status.computing': '魔法陣を構築中...',
         'status.awaiting': '解析待機中...',
         'loading.summoning': '⟐ 魔法陣を召喚中...',

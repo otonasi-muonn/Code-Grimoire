@@ -24,7 +24,12 @@ import type {
     HierarchyEdge,
     BubbleGroup,
     BubbleSizeMode,
+    NodeSizeStats,
 } from '../shared/types.js';
+import {
+    computeNodeSizeStats,
+    computeNodeRadius,
+} from './utils/node-size.js';
 
 // ─── 定数 ────────────────────────────────────────────────
 const RING_RADII = {
@@ -53,6 +58,12 @@ let nodeIndexMap: Map<string, number> = new Map();
 let currentLayoutMode: LayoutMode = 'force';
 let currentFocusNodeId: string | null = null;
 let currentBubbleSizeMode: BubbleSizeMode = 'lineCount';
+/**
+ * v2 改修 (レビュー): forceCollide / Galaxy / Balloon の半径・間隔・padding を
+ * 相対値で決定するための統計。webview から INIT 時に届く想定だが、無ければ
+ * Worker 内で再計算する。
+ */
+let currentNodeSizeStats: NodeSizeStats = { count: 0, minLines: 1, maxLines: 1, medianLines: 1, p90Lines: 1 };
 /** 最後に計算された階層エッジ (Balloon/Galaxy レイアウト時のみ) */
 let lastHierarchyEdges: HierarchyEdge[] = [];
 /** 最後に計算された Bubble グループ円 (Balloon レイアウト時のみ) */
@@ -65,6 +76,9 @@ self.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
         case 'INIT':
             currentLayoutMode = msg.payload.layoutMode || 'force';
             currentBubbleSizeMode = msg.payload.bubbleSizeMode || 'lineCount';
+            // webview 側で算出済みなら受け取る。なければ Worker 内で再計算。
+            currentNodeSizeStats = msg.payload.nodeSizeStats
+                ?? computeNodeSizeStats(msg.payload.nodes);
             initLayout(msg.payload.nodes, msg.payload.edges, msg.payload.focusNodeId);
             break;
         case 'FOCUS':
@@ -140,8 +154,11 @@ function initForceSimulation(focusNodeId: string | null): void {
             .distanceMax(800)
         )
         .force('collide', forceCollide<WorkerNode>()
-            .radius(d => Math.max(22, Math.sqrt(d.lineCount) * 2.5 + 14))
-            .strength(0.8)
+            // v2 改修 (レビュー): 描画 (graph.ts) と同じ半径を使い、不整合を解消。
+            // マージン + 4 は枠線分の最低マージン (元の式 + 14 から再縮小、
+            // 中央値あたりで元の collide 式とほぼ近似する)。
+            .radius(d => computeNodeRadius(d.lineCount, currentNodeSizeStats) + 4)
+            .strength(1.0)
         )
         .force('ring', ringForce(0.6))
         .stop();
@@ -389,35 +406,112 @@ function calculateGalaxyLayout(): Map<string, { x: number; y: number }> {
         depthGroups.get(d)!.push(n);
     }
 
-    // 放射状配置: 深度→半径、同じ深度のノードは等角に配置
-    const RING_SPACING = 200;
-    const CENTER_RADIUS = 0;
+    // ─── 放射状配置 (Plan agent 解法 A + C による重なり解消) ─────────
+    //
+    // 解法 A: 各深度のリング半径を動的算出。
+    //   minByGap    = 前リング外周 + 自リング最大半径 + マージン
+    //   minByCircum = N × (2·Rmax + margin) / (2π)  ノードを 1 周に並べる必要円周
+    //   radius_d    = max(minByGap, minByCircum)
+    //
+    // 解法 C: 1 周に収まらない深度は内側 → 外側に subRing 分割する。
+    //   maxPerRing = floor(2π·r_d / (2·Rmax + margin))
+    //   親近傍ソート済の順序を保持して subRingIdx に振り分け
+    //
+    // radiusJitter は重なり要因 (旧コードで内側へ引っ張っていた) なので除去。
+    const MARGIN = 20;
+    const nodeAngles = new Map<string, number>();
+    const sortedDepths = Array.from(depthGroups.keys()).sort((a, b) => a - b);
 
-    for (const [depth, group] of depthGroups) {
+    // 各深度の最大ノード半径を事前計算 (描画半径と同じ式)
+    const depthRmax = new Map<number, number>();
+    for (const [d, group] of depthGroups) {
+        let rmax = 0;
+        for (const n of group) {
+            const r = computeNodeRadius(n.lineCount, currentNodeSizeStats);
+            if (r > rmax) { rmax = r; }
+        }
+        depthRmax.set(d, rmax);
+    }
+
+    // 動的リング半径 (解法 A)
+    const ringRadius = new Map<number, number>();
+    ringRadius.set(0, 0);
+    let prevR = 0;
+    let prevRmax = 0;
+    for (const d of sortedDepths) {
+        if (d === 0) { continue; }
+        const N = depthGroups.get(d)!.length;
+        const Rmax = depthRmax.get(d)!;
+        const minByGap = prevR + prevRmax + Rmax + MARGIN;
+        const minByCircum = (N * (2 * Rmax + MARGIN)) / (2 * Math.PI);
+        const r = Math.max(minByGap, minByCircum);
+        ringRadius.set(d, r);
+        prevR = r;
+        prevRmax = Rmax;
+    }
+
+    for (const depth of sortedDepths) {
+        const group = depthGroups.get(depth)!;
         if (depth === 0) {
-            // エントリーポイントは中心
             for (const n of group) {
                 result.set(n.id, { x: 0, y: 0 });
+                nodeAngles.set(n.id, 0);
             }
             continue;
         }
 
-        const radius = CENTER_RADIUS + depth * RING_SPACING;
-        const angleStep = (Math.PI * 2) / Math.max(1, group.length);
-        // 深度ごとにオフセットを付けてスパイラル感を出す
+        const radius = ringRadius.get(depth)!;
+        const Rmax = depthRmax.get(depth)!;
         const angleOffset = depth * 0.618 * Math.PI;
 
-        for (let i = 0; i < group.length; i++) {
-            const angle = angleStep * i + angleOffset;
-            // 依存数が多いノードほど内側に微調整
-            const nodeDeps = (outDegree.get(group[i].id) || 0) + (inDegree.get(group[i].id) || 0);
-            const radiusJitter = Math.min(RING_SPACING * 0.3, nodeDeps * 5);
-            const finalRadius = Math.max(30, radius - radiusJitter);
+        // 親近傍ソート (38e675d で導入したロジックを維持)
+        const groupWithAnchor = group.map(n => {
+            const parents: number[] = [];
+            for (const src of reverseAdj.get(n.id) ?? []) {
+                if (depthMap.get(src) === depth - 1) {
+                    const a = nodeAngles.get(src);
+                    if (a !== undefined) { parents.push(a); }
+                }
+            }
+            for (const dst of forwardAdj.get(n.id) ?? []) {
+                if (depthMap.get(dst) === depth - 1) {
+                    const a = nodeAngles.get(dst);
+                    if (a !== undefined) { parents.push(a); }
+                }
+            }
+            let anchor = 0;
+            if (parents.length > 0) {
+                let sx = 0;
+                let sy = 0;
+                for (const a of parents) { sx += Math.cos(a); sy += Math.sin(a); }
+                anchor = Math.atan2(sy, sx);
+            }
+            return { node: n, anchor };
+        });
 
-            result.set(group[i].id, {
-                x: Math.cos(angle) * finalRadius,
-                y: Math.sin(angle) * finalRadius,
+        groupWithAnchor.sort((a, b) => a.anchor - b.anchor);
+
+        // subRing 分割 (解法 C) — 1 周に収まらない場合に内→外へ振り分け
+        const subRingSpacing = 2 * Rmax + MARGIN;
+        const maxPerRing = Math.max(1, Math.floor((2 * Math.PI * radius) / subRingSpacing));
+        const totalSubRings = Math.ceil(groupWithAnchor.length / maxPerRing);
+
+        for (let i = 0; i < groupWithAnchor.length; i++) {
+            const { node: n } = groupWithAnchor[i];
+            const subRingIdx = Math.floor(i / maxPerRing);
+            const indexInRing = i % maxPerRing;
+            const ringSize = subRingIdx === totalSubRings - 1
+                ? groupWithAnchor.length - subRingIdx * maxPerRing
+                : maxPerRing;
+            const subRingR = radius + subRingIdx * subRingSpacing;
+            const angleStep = (Math.PI * 2) / Math.max(1, ringSize);
+            const angle = angleStep * indexInRing + angleOffset;
+
+            result.set(n.id, {
+                x: Math.cos(angle) * subRingR,
+                y: Math.sin(angle) * subRingR,
             });
+            nodeAngles.set(n.id, angle);
         }
     }
 
@@ -448,36 +542,56 @@ function calculateGalaxyLayout(): Map<string, { x: number; y: number }> {
 
 /** Balloon レイアウト: パック円充填 (Bubble) — ディレクトリグループ円付き */
 function calculateBalloonLayout(dirTree: DirTreeNode): Map<string, { x: number; y: number }> {
-    // サイズモードに応じて value を再計算
-    if (currentBubbleSizeMode === 'fileSize') {
-        const nodeMap = new Map<string, WorkerNode>();
-        for (const n of nodes) { nodeMap.set(n.id, n); }
-        const assignFileSize = (d: DirTreeNode) => {
-            if (d.nodeId) {
-                const workerNode = nodeMap.get(d.nodeId);
-                d.value = Math.max(workerNode?.fileSize || workerNode?.lineCount || 10, 10);
-            }
-            for (const child of d.children) { assignFileSize(child); }
-        };
-        assignFileSize(dirTree);
-    }
+    const nodeMap = new Map<string, WorkerNode>();
+    for (const n of nodes) { nodeMap.set(n.id, n); }
+
+    // ─── Plan agent 解法 P + Q + R による重なり解消 ──────────────
+    //
+    // P: d.value を描画半径の二乗 (= 面積) に揃える。
+    //    d3-pack は r ∝ sqrt(value) なので d3 の内部半径 ≡ 実描画半径 になり、
+    //    子円同士は d3 の保証通り重ならない。
+    // Q: size を totalArea (= Σ πR²) と充填率 0.55 から動的算出。
+    //    container に収まらず葉が「はみ出る」現象を解消。
+    // R: padding は avgRadius × 0.3 ベースに動的化。
+    const assignRadiusSquared = (d: DirTreeNode) => {
+        if (d.nodeId) {
+            const wn = nodeMap.get(d.nodeId);
+            const lc = currentBubbleSizeMode === 'fileSize'
+                ? (wn?.fileSize ?? wn?.lineCount ?? 10)
+                : (wn?.lineCount ?? 10);
+            const r = computeNodeRadius(lc, currentNodeSizeStats);
+            d.value = Math.PI * r * r;
+        }
+        for (const child of d.children) { assignRadiusSquared(child); }
+    };
+    assignRadiusSquared(dirTree);
 
     const root = hierarchy(dirTree)
-        .sum(d => d.value || 10)
+        .sum(d => d.value || (Math.PI * 12 * 12))
         .sort((a, b) => (b.value || 0) - (a.value || 0));
 
+    const totalArea = root.value ?? Math.PI * 12 * 12;
+    const FILL_RATIO = 0.55; // d3-pack の経験的充填率
+    const dynamicSide = Math.min(
+        10000,
+        Math.max(2000, 2 * Math.sqrt(totalArea / (Math.PI * FILL_RATIO))),
+    );
+    const avgR = Math.sqrt(totalArea / (Math.PI * Math.max(1, nodes.length)));
+    const dynPadding = Math.max(4, avgR * 0.3);
+
     const packLayout = d3Pack<DirTreeNode>()
-        .size([2000, 2000])
-        .padding(20);
+        .size([dynamicSide, dynamicSide])
+        .padding(dynPadding);
 
     packLayout(root);
 
     const result = new Map<string, { x: number; y: number }>();
     const groups: BubbleGroup[] = [];
+    const HALF = dynamicSide / 2;
 
     root.each((d: HierarchyNode<DirTreeNode>) => {
-        const dx = (d as any).x - 1000;
-        const dy = (d as any).y - 1000;
+        const dx = (d as any).x - HALF;
+        const dy = (d as any).y - HALF;
         const dr = (d as any).r as number;
 
         if (d.data.nodeId) {
@@ -492,6 +606,35 @@ function calculateBalloonLayout(dirTree: DirTreeNode): Map<string, { x: number; 
                 if (n.children) { for (const c of n.children) { collectLeaves(c); } }
             };
             collectLeaves(d);
+
+            // ─── v2 改修 (T-06): ヒートマップ用メトリクス計算 ──
+            const childSet = new Set(childIds);
+            let internalDeps = 0;
+            let externalDeps = 0;
+            for (const e of edges) {
+                const srcIn = childSet.has(e.source);
+                const tgtIn = childSet.has(e.target);
+                if (srcIn && tgtIn) {
+                    internalDeps++;
+                } else if (srcIn || tgtIn) {
+                    externalDeps++;
+                }
+            }
+            const totalDeps = internalDeps + externalDeps;
+            // 凝集度: 全体依存数 = 0 のフォルダは独立完結とみなして 1.0
+            const cohesion = totalDeps === 0 ? 1.0 : internalDeps / totalDeps;
+
+            let sumLines = 0;
+            let cycleCount = 0;
+            for (const cid of childIds) {
+                const wn = nodeMap.get(cid);
+                if (wn) {
+                    sumLines += wn.lineCount;
+                    if (wn.inCycle) { cycleCount++; }
+                }
+            }
+            const avgLineCount = childIds.length > 0 ? sumLines / childIds.length : 0;
+
             groups.push({
                 label: d.data.name,
                 x: dx,
@@ -499,6 +642,9 @@ function calculateBalloonLayout(dirTree: DirTreeNode): Map<string, { x: number; 
                 r: dr,
                 depth: d.depth,
                 childNodeIds: childIds,
+                cohesion,
+                avgLineCount,
+                cycleCount,
             });
         }
     });

@@ -48,7 +48,7 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             align-items: center;
             justify-content: center;
             background: #080a18;
-            z-index: 1000;
+            z-index: 1200;
             transition: opacity 0.6s ease;
         }
         #loading-overlay.hidden {
@@ -108,7 +108,8 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             box-shadow: 0 0 16px rgba(0, 180, 255, 0.18);
         }
         #search-input::placeholder {
-            color: rgba(100, 140, 200, 0.5);
+            /* v2 改修 (a11y): 2.25:1 → WCAG 4.5:1 以上に引き上げ */
+            color: rgba(140, 165, 210, 0.8);
         }
         .search-icon {
             position: absolute;
@@ -122,7 +123,8 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             position: absolute;
             right: calc(50% - 168px);
             top: 22px;
-            color: rgba(100, 180, 255, 0.6);
+            /* v2 改修 (a11y): 3.80:1 → WCAG 4.5:1 以上に引き上げ */
+            color: rgba(120, 190, 255, 0.95);
             font-family: system-ui, sans-serif;
             font-size: 11px;
         }
@@ -206,6 +208,57 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             border: 1px solid rgba(100, 150, 255, 0.18);
             font-family: system-ui, sans-serif;
         }
+        /* v2 改修 (レビュー): ノード hover ツールチップ。viewport ズームの影響を
+           受けないよう HTML 側で実装。z-index は detail-panel(800) より上、
+           help-overlay(950) より下に置く。 */
+        #node-tooltip {
+            position: fixed;
+            pointer-events: none;
+            background: rgba(10, 20, 40, 0.94);
+            color: #d8e0f4;
+            padding: 6px 10px;
+            border: 1px solid rgba(120, 170, 240, 0.45);
+            border-radius: 5px;
+            font-size: 12px;
+            font-family: system-ui, sans-serif;
+            line-height: 1.5;
+            z-index: 850;
+            opacity: 0;
+            transform: translateY(-4px);
+            transition: opacity 0.15s ease, transform 0.15s ease;
+            white-space: nowrap;
+            max-width: 320px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+        }
+        #node-tooltip.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        #node-tooltip .nt-title {
+            font-weight: bold;
+            color: #cfe8ff;
+            font-size: 12px;
+        }
+        #node-tooltip .nt-meta {
+            font-size: 11px;
+            opacity: 0.85;
+            margin-top: 2px;
+        }
+        .help-replay-btn {
+            background: rgba(70, 130, 220, 0.18);
+            border: 1px solid rgba(120, 170, 240, 0.45);
+            color: #cde0ff;
+            padding: 8px 16px;
+            font-size: 13px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-family: system-ui, sans-serif;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .help-replay-btn:hover {
+            background: rgba(90, 150, 240, 0.32);
+            border-color: rgba(150, 200, 255, 0.7);
+        }
         #detail-panel .dp-warning {
             color: #ff8844;
             font-size: 11px;
@@ -213,6 +266,25 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             border-left: 2px solid rgba(255, 136, 68, 0.4);
             padding-left: 8px;
             margin: 4px 0;
+        }
+        /* v2 改修 (レビュー): severity / hugeFileLevel の色を inline style から
+           class に逃がし、CSS インジェクション境界を消す + 色弱対応の二重符号化
+           (色 + アイコン + テキストラベル) を後押しする。
+           背景 rgba(6,8,22,0.97) に対し全色 4.5:1 以上のコントラストを維持。 */
+        #detail-panel .dp-warning.dp-severity-critical,
+        #detail-panel .dp-warning.dp-huge-critical {
+            color: #ff7777;
+            font-weight: bold;
+            border-left-color: rgba(255, 119, 119, 0.55);
+        }
+        #detail-panel .dp-warning.dp-severity-warning,
+        #detail-panel .dp-warning.dp-huge-warning {
+            color: #ffaa33;
+            border-left-color: rgba(255, 170, 51, 0.5);
+        }
+        #detail-panel .dp-warning.dp-severity-info {
+            color: #ffee66;
+            border-left-color: rgba(255, 238, 102, 0.45);
         }
         #detail-panel .dp-dep-list {
             list-style: none;
@@ -405,7 +477,8 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
         #detail-panel .dp-code-peek .cp-line-nums {
             position: absolute;
             top: 12px; left: 12px;
-            color: rgba(100, 140, 200, 0.25);
+            /* v2 改修 (a11y): 1.36:1 (実質判読不能) → WCAG 基準へ。会場プロジェクタ対策 */
+            color: rgba(140, 165, 210, 0.8);
             font-family: Consolas, 'Courier New', monospace;
             font-size: 11px;
             line-height: 1.5;
@@ -429,12 +502,80 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
             padding: 8px;
             font-style: italic;
         }
+        /* ─── Onboarding Tooltip (v2: T-08) ─────────────── */
+        /* WCAG 2.2 コントラスト比: 背景 rgba(10,14,32,0.96) vs 文字 #d8e0f4 = 13.4:1 (AAA) */
+        #onboarding-tooltip {
+            position: fixed;
+            right: 20px;
+            bottom: 80px;
+            width: 320px;
+            padding: 16px 18px 14px;
+            background: rgba(10, 14, 32, 0.96);
+            border: 1px solid rgba(100, 150, 255, 0.35);
+            border-radius: 10px;
+            color: #d8e0f4;
+            font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+            font-size: 13px;
+            line-height: 1.6;
+            z-index: 1100;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(16px);
+            display: none;
+        }
+        #onboarding-tooltip::before {
+            content: '✦ ツアー';
+            display: block;
+            font-size: 11px;
+            color: rgba(100, 180, 255, 0.7);
+            letter-spacing: 1.2px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+        #ob-text {
+            margin-bottom: 14px;
+            color: #d8e0f4;
+        }
+        #ob-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        #ob-progress {
+            font-size: 11px;
+            color: rgba(180, 200, 240, 0.6);
+            font-family: Consolas, monospace;
+        }
+        #ob-skip, #ob-next {
+            background: rgba(100, 150, 255, 0.12);
+            border: 1px solid rgba(100, 150, 255, 0.3);
+            border-radius: 5px;
+            color: #d8e0f4;
+            font-size: 12px;
+            padding: 5px 12px;
+            cursor: pointer;
+            transition: background 0.15s, border-color 0.15s;
+            margin-left: 6px;
+            font-family: inherit;
+        }
+        #ob-skip:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+        #ob-next {
+            background: rgba(100, 200, 255, 0.2);
+            border-color: rgba(100, 200, 255, 0.5);
+            color: #fff;
+            font-weight: 600;
+        }
+        #ob-next:hover {
+            background: rgba(100, 200, 255, 0.32);
+        }
     </style>
 </head>
 <body>
     <div id="loading-overlay">
         <div class="loading-circle"></div>
-        <div class="loading-text">⟐ Summoning the Magic Circle...</div>
+        <div class="loading-text">⟐ 魔方陣を構築中… 依存関係を解析しています</div>
     </div>
     <!-- Search Overlay (V3 Phase 2) -->
     <div id="search-overlay">
@@ -450,10 +591,23 @@ export function getWebviewContent(webview: Webview, scriptUri: Uri, workerUri: U
         </div>
         <div id="dp-content"></div>
     </div>
+    <!-- Hover Tooltip (v2: レビュー) -->
+    <div id="node-tooltip" aria-hidden="true"></div>
     <!-- Help Overlay (V6 Phase 4) -->
     <div id="help-overlay">
         <span class="help-close" id="help-close">✕</span>
         <div class="help-card" id="help-card"></div>
+    </div>
+    <!-- Onboarding Tooltip (v2: T-08) — 初回起動時のみ表示 -->
+    <div id="onboarding-tooltip">
+        <div id="ob-text"></div>
+        <div id="ob-footer">
+            <span id="ob-progress">1 / 5</span>
+            <div>
+                <button id="ob-skip">スキップ</button>
+                <button id="ob-next">次へ →</button>
+            </div>
+        </div>
     </div>
     <script nonce="${nonce}" data-worker-uri="${workerUri}" src="${scriptUri}"></script>
 </body>

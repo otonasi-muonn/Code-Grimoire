@@ -3,6 +3,8 @@ import { Graphics, Text, TextStyle, Container } from 'pixi.js';
 import { t } from '../core/i18n.js';
 import { currentLang } from '../core/i18n.js';
 import { MINIMAP_SIZE } from './minimap.js';
+import { closeDetailPanel } from './detail-panel.js';
+import { showOnboardingAgain } from './onboarding.js';
 
 let helpOverlay: HTMLElement | null = null;
 let helpCard: HTMLElement | null = null;
@@ -68,10 +70,25 @@ export function toggleHelp(forceState?: boolean) {
     if (!helpOverlay || !helpCard) { return; }
 
     if (helpVisible) {
+        // help 表示中は詳細パネルを閉じる (z-index 上は help > detail-panel だが、
+        // 同時表示は来場者に「2 枚開いている」混乱を与えるため排他にする)
+        closeDetailPanel();
         helpCard.innerHTML = buildHelpContent();
         helpOverlay.classList.add('visible');
+        bindHelpCardActions();
     } else {
         helpOverlay.classList.remove('visible');
+    }
+}
+
+/** ヘルプカード内の動的アクション (ツアー再表示など) をバインド */
+function bindHelpCardActions() {
+    const replayBtn = document.getElementById('help-replay-onboarding');
+    if (replayBtn) {
+        replayBtn.addEventListener('click', () => {
+            toggleHelp(false);
+            showOnboardingAgain();
+        });
     }
 }
 
@@ -95,7 +112,6 @@ function buildHelpContent(): string {
             <tr><td>Q / W / E</td><td>${isJa ? '宇宙の再構築（レイアウト切替）' : 'Rebuild cosmos (change layout)'}</td></tr>
             <tr><td>Ctrl+F</td><td>${isJa ? 'インクリメンタルサーチ & ハイライト' : 'Incremental search & highlight'}</td></tr>
             <tr><td>Esc</td><td>${isJa ? '検索解除 / パネルを閉じる' : 'Clear search / close panel'}</td></tr>
-            <tr><td>Space</td><td>${isJa ? '物理演算の一時停止 / 再開' : 'Pause / resume physics simulation'}</td></tr>
             <tr><td>?</td><td>${isJa ? 'このヘルプを表示 / 非表示' : 'Toggle this Help overlay'}</td></tr>
         </table>
 
@@ -104,7 +120,7 @@ function buildHelpContent(): string {
             <tr><td style="color:#6696ff">1: ${isJa ? '標準のルーン' : 'Standard'}</td><td>${isJa ? '最も基本的な表示。ファイルパスのハッシュ値に基づき、同じディレクトリのファイルは同系色で表示されます' : 'Basic view. Node colors hashed from file paths — files in the same directory share similar hues'}</td></tr>
             <tr><td style="color:#44bbff">2: ${isJa ? '構造のルーン' : 'Structure'}</td><td>${isJa ? '構造的な欠陥を浮き彫りに。循環参照を赤き鎖（赤いエッジ）で発光。問題のないノードは石化（グレーアウト）し、修正すべき箇所だけが浮かび上がります' : 'Reveals structural flaws. Circular dependencies glow as red chains. Uninvolved nodes are petrified (grayed out)'}</td></tr>
             <tr><td style="color:#ff8800">3: ${isJa ? '防衛のルーン' : 'Defense'}</td><td>${isJa ? 'セキュリティリスクを可視化。eval や dangerouslySetInnerHTML 等を含む星を警告色（赤/オレンジ）で脈動。リスクを修正すると即座に石化（浄化）します' : 'Visualizes security risks. Files with eval/dangerouslySetInnerHTML pulse in warning colors. Fixing risks purifies (petrifies) them'}</td></tr>
-            <tr><td style="color:#44ff88">4: ${isJa ? '最適化のルーン' : 'Optimization'}</td><td>${isJa ? 'デッドコードやバンドル肥大化の原因を探索。到達不能ファイルは石化（死の兆候）。副作用のみのインポートは混沌の契約として強調されます' : 'Hunts dead code and bundle bloat. Unreachable files petrify (death signs). Side-effect-only imports highlighted as chaotic contracts'}</td></tr>
+            <tr><td style="color:#44ff88">4: ${isJa ? '最適化のルーン' : 'Optimization'}</td><td>${isJa ? 'Tree-shaking リスク（バンドル肥大の要因）を可視化。barrel（再エクスポート集約）ファイル・副作用インポート・巨大ファイルをリスクスコアで色分けし、リスクの低いノードは石化します' : 'Visualizes Tree-shaking risk (bundle bloat factors). Color-codes barrel files (re-export hubs), side-effect imports, and huge files by risk score; low-risk nodes are petrified'}</td></tr>
             <tr><td style="color:#66ddff">5: ${isJa ? '分析のルーン' : 'Analysis'}</td><td>${isJa ? '魔力（データシンボル）の流量を可視化。ノード上に ⇄ N (↑X ↓Y) を表示。↑=供給（export数）、↓=消費（import数）。エッジ種別フィルタリングも可能' : 'Visualizes magic (data symbol) flow. Shows ⇄ N (↑X ↓Y) on nodes. ↑=supply (exports), ↓=consume (imports). Edge type filtering available'}</td></tr>
         </table>
 
@@ -200,5 +216,9 @@ function buildHelpContent(): string {
             <tr><td style="font-size:14px;color:#88aacc">大 ↔ 小</td><td>${isJa ? 'ノードのサイズ — ファイルの行数に比例。大きいほどコード量が多い' : 'Node size — proportional to file line count. Larger = more code'}</td></tr>
             <tr><td style="font-size:14px">━ ┄ ⤳ ⚡ ⇄</td><td>${isJa ? 'エッジフィルター — 分析のルーン時にツールバーに表示。エッジ種別ごとに表示/非表示を切替' : 'Edge filters — shown in toolbar during Analysis Rune. Toggle visibility per edge type'}</td></tr>
         </table>
+
+        <h3>🎓 ${isJa ? 'オンボーディングツアー' : 'Onboarding Tour'}</h3>
+        <p style="font-size:12px;color:#8899aa;margin:4px 0 8px">${isJa ? '初回起動時に表示された 5 ステップツアーをいつでも見返せます。' : 'Replay the 5-step tour shown at first launch.'}</p>
+        <button id="help-replay-onboarding" class="help-replay-btn">${isJa ? '🔁 ツアーをもう一度見る' : '🔁 Replay onboarding tour'}</button>
     `;
 }

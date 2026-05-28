@@ -66,6 +66,22 @@ export function startParticleLoading() {
     particleAnimActive = true;
     particleContainer.alpha = 1;
 
+    // パーティクルは container ローカルの (0,0) を中心に収束する。
+    // container 自体を「現在の関心位置」に置くことで、画面端ではなくノード or
+    // ビューポート中央に演出が出るようにする。
+    if (state.focusNodeId) {
+        const pos = state.nodePositions.get(state.focusNodeId);
+        if (pos) {
+            particleContainer.position.set(pos.x, pos.y);
+        } else {
+            const c = _viewport.center;
+            particleContainer.position.set(c.x, c.y);
+        }
+    } else {
+        const c = _viewport.center;
+        particleContainer.position.set(c.x, c.y);
+    }
+
     particles = [];
     for (let i = 0; i < PARTICLE_COUNT; i++) {
         particles.push(spawnParticle());

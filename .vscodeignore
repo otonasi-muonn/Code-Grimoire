@@ -1,11 +1,18 @@
 .vscode/**
 .vscode-test/**
+.claude/**
+.github/**
 src/**
 test/**
-Dock/**
+docs/legacy/**
+docs/20*.md
+tasks/**
 .gitignore
+.gitattributes
+.editorconfig
 .yarnrc
-vsc-extension-quickstart.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
 **/tsconfig.json
 **/tsconfig.webview.json
 **/eslint.config.mjs
@@ -14,4 +21,9 @@ vsc-extension-quickstart.md
 **/*.ts
 **/.vscode-test.*
 node_modules/**
+# Item C: @vscode/ripgrep を esbuild の external 指定で runtime resolve するため、
+# 本パッケージとプラットフォーム固有 binary (@vscode/ripgrep-<platform>) を .vsix に含める
+!node_modules/@vscode/ripgrep/**
+!node_modules/@vscode/ripgrep-*/**
 .git/**
+*.vsix

@@ -90,6 +90,18 @@ export function openDetailPanel(nodeId: string) {
         </div>
     </div>`;
 
+    // v2 改修 (T-03 / レビュー): 巨大ファイル警告セクション。
+    // 色は CSS class に逃がし、アイコン + 大文字テキストラベルで色覚特性に対応。
+    if (node.hugeFileLevel === 'critical') {
+        html += `<div class="dp-section">
+            <div class="dp-warning dp-huge-critical">⚠ [CRITICAL] ${node.lineCount} lines (推奨: 500 行以下)</div>
+        </div>`;
+    } else if (node.hugeFileLevel === 'warning') {
+        html += `<div class="dp-section">
+            <div class="dp-warning dp-huge-warning">⚠ [WARNING] ${node.lineCount} lines は分割を検討</div>
+        </div>`;
+    }
+
     if (node.gitCommitCount !== undefined) {
         html += `<div class="dp-section">
             <div class="dp-label">${t('dp.git')}</div>
@@ -116,7 +128,7 @@ export function openDetailPanel(nodeId: string) {
             <ul class="dp-dep-list">${outEdges.map(e => {
                 const targetNode = graph.nodes.find(n => n.id === e.target);
                 const label = targetNode?.label || e.target.split('/').pop() || e.target;
-                return `<li data-node-id="${escapeHtml(e.target)}">${escapeHtml(label)} <small style="color:rgba(100,140,200,0.5)">(${e.kind})</small></li>`;
+                return `<li data-node-id="${escapeHtml(e.target)}">${escapeHtml(label)} <small style="color:rgba(140,165,210,0.8)">(${e.kind})</small></li>`;
             }).join('')}</ul>
         </div>`;
     }
@@ -134,11 +146,27 @@ export function openDetailPanel(nodeId: string) {
     }
 
     if (node.securityWarnings && node.securityWarnings.length > 0) {
+        // v2 改修 (T-04 / レビュー): severity を「色 + アイコン + 大文字テキスト」の
+        // 三重符号化で表示。色は CSS class (.dp-severity-*) に逃がして CSS インジェクション
+        // 境界を消し、色弱モデル (deuteranopia / protanopia / tritanopia) でも識別可能にする。
+        const severityStyle = (sev: 'info' | 'warning' | 'critical') => {
+            if (sev === 'critical') {
+                return { cls: 'dp-severity-critical', icon: '⛔', label: 'CRITICAL' };
+            } else if (sev === 'warning') {
+                return { cls: 'dp-severity-warning', icon: '⚠', label: 'WARNING' };
+            } else {
+                return { cls: 'dp-severity-info', icon: 'ⓘ', label: 'INFO' };
+            }
+        };
+
         html += `<div class="dp-section">
             <div class="dp-label">${t('dp.securityWarnings')}</div>
-            ${node.securityWarnings.map(w =>
-                `<div class="dp-warning">L${w.line}: ${escapeHtml(w.message)}</div>`
-            ).join('')}
+            ${node.securityWarnings.map(w => {
+                // severity が未指定の警告 (将来分や旧データ) は warning として扱う
+                const sev = w.severity ?? 'warning';
+                const s = severityStyle(sev);
+                return `<div class="dp-warning ${s.cls}">${s.icon} [${s.label}] L${w.line}: ${escapeHtml(w.message)}</div>`;
+            }).join('')}
         </div>`;
     }
 
@@ -158,19 +186,35 @@ export function openDetailPanel(nodeId: string) {
     }
 
     if (node.gitCommitCount !== undefined && node.gitCommitCount > 0) {
-        const maxCommits = 30;
-        const barCount = 8;
-        const commitNorm = Math.min(1, node.gitCommitCount / maxCommits);
+        // v2 改修 (P1-A): 直近 N 期間 (デフォルト 8 期間 × 30 日) の commit 数を
+        // 実データとしてバー描画する。Math.random() による偽装表示を撤去。
+        const activity = node.gitRecentActivity ?? [];
+        const barCount = activity.length > 0 ? activity.length : 8;
+        // ノード内の最大バケット値で正規化 (ファイル単位の相対比較)
+        const maxBar = Math.max(1, ...activity, 0);
         let bars = '';
         for (let b = 0; b < barCount; b++) {
-            const h = Math.max(2, Math.round(commitNorm * 22 * (0.3 + Math.random() * 0.7)));
-            const heatHue = commitNorm > 0.5 ? '0' : '30';
-            bars += `<div class="bar" style="height:${h}px;background:hsla(${heatHue},80%,${50 + b * 3}%,0.7)"></div>`;
+            const count = activity[b] ?? 0;
+            const heightRatio = maxBar > 0 ? count / maxBar : 0;
+            const h = Math.max(2, Math.round(heightRatio * 22));
+            // 色: commit があるバケット = 赤系 (活動)、無いバケット = 暗色 (静止)
+            const heatHue = count > 0 ? '0' : '210';
+            const lightness = count > 0 ? 45 + b * 3 : 25;
+            const alpha = count > 0 ? 0.75 : 0.35;
+            const monthsAgo = barCount - 1 - b;
+            const monthLabel = monthsAgo === 0 ? '直近 30 日' : `${monthsAgo + 1} ヶ月前`;
+            bars += `<div class="bar" style="height:${h}px;background:hsla(${heatHue},80%,${lightness}%,${alpha})" title="${monthLabel}: ${count} commits"></div>`;
         }
+        // v2 改修 (T-05): isHotSpot フラグを優先表示。フラグが立たない場合は従来の commit 数ベース表記
+        // commitNorm: 30 件を 100% とした正規化スコア (旧実装の閾値 0.3 = 9 commits を踏襲)
+        const commitNorm = Math.min(1, node.gitCommitCount / 30);
+        const activityLabel = node.isHotSpot
+            ? `${node.gitCommitCount} commits — Hot spot 🔥 (修正頻度上位)`
+            : `${node.gitCommitCount} commits — ${commitNorm > 0.3 ? 'Active' : 'Stable'}`;
         html += `<div class="dp-section">
             <div class="dp-label">Activity</div>
             <div class="dp-activity-bar">${bars}</div>
-            <div class="dp-risk-label">${node.gitCommitCount} commits — ${commitNorm > 0.6 ? 'Hot spot 🔥' : commitNorm > 0.3 ? 'Active' : 'Stable'}</div>
+            <div class="dp-risk-label">${activityLabel}</div>
         </div>`;
     }
 
@@ -184,8 +228,8 @@ export function openDetailPanel(nodeId: string) {
             html += `<div class="dp-section">
                 <div class="dp-label">${t('dp.dataFlow')}</div>
                 <div class="dp-value">
-                    <span class="dp-badge" style="color:#66ddff">↑ ${totalOut} symbols out</span>
-                    <span class="dp-badge" style="color:#66ddff">↓ ${totalIn} symbols in</span>
+                    <span class="dp-badge" style="color:#66ddff">↑ 供給 ${totalIn}</span>
+                    <span class="dp-badge" style="color:#66ddff">↓ 消費 ${totalOut}</span>
                 </div>
             </div>`;
         }
@@ -329,6 +373,30 @@ export function openFolderDetailPanel(group: BubbleGroup) {
         </div>
     </div>`;
 
+    // v2 改修 (T-06): ヒートマップメトリクス表示
+    const metricBadges: string[] = [];
+    if (group.cohesion !== undefined) {
+        const cohesionPct = Math.round(group.cohesion * 100);
+        const cohesionColor = group.cohesion >= 0.8 ? '#44dd66'
+            : group.cohesion >= 0.5 ? '#ddcc44' : '#dd4444';
+        metricBadges.push(`<span class="dp-badge" style="color:${cohesionColor}">🧬 凝集度 ${cohesionPct}%</span>`);
+    }
+    if (group.avgLineCount !== undefined) {
+        const avg = Math.round(group.avgLineCount);
+        const avgColor = avg < 200 ? '#44dd66' : avg < 500 ? '#ddcc44' : '#dd4444';
+        metricBadges.push(`<span class="dp-badge" style="color:${avgColor}">📐 平均 ${avg} 行</span>`);
+    }
+    if (group.cycleCount !== undefined && group.cycleCount > 0) {
+        const cyColor = group.cycleCount <= 2 ? '#ddcc44' : '#dd4444';
+        metricBadges.push(`<span class="dp-badge" style="color:${cyColor}">⟳ 循環参照 ${group.cycleCount}</span>`);
+    }
+    if (metricBadges.length > 0) {
+        html += `<div class="dp-section">
+            <div class="dp-label">Folder Metrics</div>
+            <div class="dp-value">${metricBadges.join('')}</div>
+        </div>`;
+    }
+
     // ファイル種別の内訳
     if (kindsCount.size > 0) {
         html += `<div class="dp-section">
@@ -381,7 +449,7 @@ export function openFolderDetailPanel(group: BubbleGroup) {
         <ul class="dp-dep-list">${childNodes
             .sort((a, b) => b.lineCount - a.lineCount)
             .map(n =>
-                `<li data-node-id="${escapeHtml(n.id)}">${escapeHtml(n.label)} <small style="color:rgba(100,140,200,0.5)">(${n.lineCount}L)</small></li>`
+                `<li data-node-id="${escapeHtml(n.id)}">${escapeHtml(n.label)} <small style="color:rgba(140,165,210,0.8)">(${n.lineCount}L)</small></li>`
             ).join('')}</ul>
     </div>`;
 
@@ -424,9 +492,12 @@ export function closeDetailPanel() {
 }
 
 function escapeHtml(str: string): string {
+    // v2 改修: ' (シングルクォート) を含む属性値の注入を防ぐため &#x27; を追加。
+    // 例: ファイルパスに ' が含まれる場合の data-node-id 属性注入対策。
     return str
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#x27;');
 }
