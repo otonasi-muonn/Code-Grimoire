@@ -4,7 +4,9 @@ All notable changes to the "codegrimoire" extension will be documented in this f
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [0.2.0] - Unreleased
+## [1.0.0] - 2026-05-28
+
+初の正式版。v0.1.x からの全改修をまとめた安定版リリース。
 
 ### Added
 - multi-tsconfig 構成プロジェクトの解析対応（複数 tsconfig でのファイル取りこぼしを解消）
