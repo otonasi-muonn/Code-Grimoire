@@ -7,196 +7,123 @@
 
 # 🔮 Code Grimoire
 
-> **"Code into Magic, Logic into Art."**
+> プロジェクトの依存関係を「魔方陣」のような図で見える化する VS Code 拡張機能。
 >
-> TypeScript / JavaScript プロジェクトの依存関係を「魔力」の流れとして解析し、美しい**魔方陣**として具現化する VS Code 拡張機能。
+> *Code into Magic, Logic into Art.*
 
 ---
 
-## ✨ 特徴 (Features)
+## これは何？
 
-*   **🌀 魔方陣の具現化**: `d3-force` 力学シミュレーションにより、ファイル間の依存関係を自然なバランスで配置。
-*   **🧙‍♂️ 5つのルーン（解析モード）**: 目的（構造把握、セキュリティ、最適化など）に応じて視点を切り替え。
-*   **🌌 3つの宇宙（レイアウト）**: 魔方陣、銀河、泡宇宙の3種類の配置アルゴリズムを搭載。
-*   **⚡ 圧倒的なパフォーマンス**: PixiJS (WebGL) + Web Worker + BitmapFont/Canvas ハイブリッド描画により、数万ファイルのプロジェクトでも 60fps を維持。
-*   **👻 Ghost Trail (探索軌跡)**: 探索した経路を光の軌跡として記録し、深い依存の森でも迷子を防ぎます。
-*   **🔍 深層探索**: インクリメンタルサーチ、詳細パネル（全知の水晶）による徹底的なコード解析。
+コードを書いていると、「このファイルはどれを使っていて、どれから使われているのか」がだんだん見えなくなってきます。特に AI と一緒に開発していると、ファイルが増えて全体像を見失いがちです。
 
----
+**Code Grimoire** は、TypeScript / JavaScript プロジェクトの **依存関係（ファイル同士の import のつながり）を 1 枚の図にして、構造を直感的に掴めるようにする** VS Code 拡張です。グラフが「魔方陣」のように広がって見えるのが特色です。
 
-## 📜 呪文の書 (Runes & Modes)
-
-キーボードの数字キー `1` ～ `5` で、魔方陣の性質（解析モード）を切り替えます。
-
-### 1. 標準のルーン (Standard Mode)
-*   **概要**: 最も基本的な表示です。
-*   **色彩**: ファイルパスのハッシュ値に基づき、同じディレクトリのファイルは同系色で表示されます。
-
-### 2. 構造のルーン (Structure Mode)
-*   **概要**: 構造的な欠陥を浮き彫りにします。
-*   **赤き鎖 (Red Edges)**: **循環参照（Circular Dependency）** を形成している依存線を赤く発光させます。
-*   **石化**: 問題のないノードはグレーアウトし、修正すべき箇所だけが浮かび上がります。
-
-### 3. 防衛のルーン (Defense Mode)
-*   **概要**: セキュリティリスクを可視化します。
-*   **警告**: `eval` や `dangerouslySetInnerHTML` など、脆弱性の原因となりうるコードを含む星を**警告色（赤/オレンジ）**で脈動させます。
-*   **浄化**: リスクを修正すると、その星は即座に石化（沈黙）します。
-
-### 4. 最適化のルーン (Optimization Mode)
-*   **概要**: デッドコードやバンドル肥大化の原因を探します。
-*   **死の兆候**: エントリーポイントから到達不能なファイルは**石化（完全なグレー）**します。これらは削除推奨です。
-*   **混沌の契約**: 副作用のみのインポート（`import './init'`）を行っている接続を強調します。
-
-### 5. 分析のルーン (Analysis Mode)
-*   **概要**: 魔力（データシンボル）の流量を可視化します。
-*   **シンボル流量**: ノード上に `⇄ N (↑X ↓Y)` を表示。
-    *   **↑ (Output/供給)**: `export` し、他に使われている数。「ライブラリ的性質」。
-    *   **↓ (Input/消費)**: 他から `import` している数。「アプリ/コントローラー的性質」。
-*   **フィルタリング**: UI上で「型のみ」「動的インポート」「再エクスポート」の表示/非表示を切り替え可能。
+- 🔍 **正確な解析** — 正規表現ではなく TypeScript Compiler API でファイルの依存を解析します。
+- ⚡ **なめらかな描画** — WebGL（PixiJS）で描き、レイアウト計算を Web Worker に分けて UI が固まらないようにしています。
+- 🧭 **5 つの解析モード × 3 つのレイアウト** — 「何を見たいか」に応じて表示を切り替えられます。
 
 ---
 
-## 📐 宇宙の理 (Layouts)
+## 主な機能
 
-キーボードの `Q`, `W`, `E` で配置アルゴリズムを再構築します。
+| 機能 | 説明 |
+| :--- | :--- |
+| 依存グラフの可視化 | ファイル間の import 関係をグラフ表示 |
+| 5 つの解析モード | 標準 / 構造（循環参照）/ セキュリティ / 最適化 / データフロー → [詳しく](docs/RUNES_GUIDE.md) |
+| 3 つのレイアウト | 力学配置 / 同心円 / 入れ子円 → [詳しく](docs/LAYOUTS_GUIDE.md) |
+| ファイル検索 | ファイル名 + 中身の全文検索（`Ctrl+F`） |
+| 詳細パネル | クリックしたファイルの依存・被依存・Git 履歴などを表示 |
 
-### 🌀 Q: 魔方陣 (Force Directed)
-物理演算により、密結合なファイル同士が引き合い、自然なクラスタを形成します。プロジェクトの「重力中心」を直感的に把握できます。
+各モード・レイアウトの「どんなときに使うか」は、専用ガイドにまとめています：
 
-### 🌌 W: 銀河 (Galaxy Layout)
-エントリーポイント（`main.ts`等）を中心に、依存の深さ（Depth）に応じて同心円状に配置します。
-*   **中心**: コアロジック。
-*   **外縁**: 依存の末端。
-*   **最外周**: **到達不能なデッドコード（Orphans）** が配置される「追放の地」。
-
-### 🫧 E: 泡宇宙 (Bubble Cosmos)
-ディレクトリ構造を入れ子の円（泡）として表現します。
-*   **サイズ切替**: ツールバーで「行数 (Lines)」または「ファイルサイズ (Size)」に切り替え可能。肥大化したモジュールを一目で特定できます。
-*   **ドリルダウン**: フォルダをクリックして内部にフォーカスできます。
+- 📜 [解析モードガイド（RUNES_GUIDE）](docs/RUNES_GUIDE.md)
+- 📐 [レイアウトガイド（LAYOUTS_GUIDE）](docs/LAYOUTS_GUIDE.md)
 
 ---
 
-## 🕯️ 召喚の儀 (Installation)
+## インストール
 
-### 前提条件 (Prerequisites)
-*   VS Code: `v1.100.0` 以上
-*   Node.js: `v18` 以上
+### 前提条件
+- VS Code `v1.100.0` 以上
+- Node.js `v18` 以上
 
-### 構築手順 (Build Steps)
-
+### 手順
 ```bash
-# 1. 禁書庫の複製 (Clone)
 git clone https://github.com/otonasi-muonn/Code-Grimoire.git
 cd Code-Grimoire
-
-# 2. ページを綴る (Install)
 npm install
-
-# 3. 魔力の充填 (Compile)
 npm run compile
 ```
 
-### 発動 (Activation)
-1.  VS Code でプロジェクトを開き、`F5` を押してデバッグ起動。
-2.  コマンドパレット (`Ctrl+Shift+P`) から **`CodeGrimoire: Open Grimoire`** を実行。
+### 起動
+1. VS Code でこのフォルダを開き、`F5` でデバッグ起動します。
+2. 立ち上がった別ウィンドウで、解析したいプロジェクトを開きます。
+3. コマンドパレット（`Ctrl+Shift+P`）から **`CodeGrimoire: Open Grimoire`** を実行します。
+
+初回起動時にかんたんな操作ツアーが表示されます。`?` キーでいつでもヘルプを開けます。
 
 ---
 
-## ⌨️ 詠唱 (Shortcuts)
+## キーボードショートカット
 
-| Key | Action | Description |
-| :--- | :--- | :--- |
-| **1 - 5** | Change Rune | モード切替 (標準/構造/防衛/最適化/分析) |
-| **Q / W / E** | Change Layout | レイアウト切替 (魔方陣/銀河/泡宇宙) |
-| **Ctrl + F** | Search | インクリメンタルサーチ & ハイライト |
-| **Esc** | Clear | 検索解除 / パネルを閉じる |
-| **Space** | Pause | 物理演算の一時停止/再開 |
-| **?** | Help | このヘルプを表示 / 非表示 |
+| Key | 動作 |
+| :--- | :--- |
+| `1` – `5` | 解析モードの切替 |
+| `Q` / `W` / `E` | レイアウトの切替 |
+| `Ctrl + F` | ファイル検索 |
+| `Esc` | 検索解除 / パネルを閉じる |
+| `?` | ヘルプの表示 / 非表示 |
 
----
-
-## 🏗️ 魔術工学 (Architecture)
-
-*   **Analysis**: TypeScript Compiler API (AST) を使用し、正規表現ではなく正確なシンボルカウントと依存解決を実現。
-*   **Rendering**: PixiJS (WebGL) を採用。**LOD (Level of Detail)** システムにより、遠景ではドット、近景ではテキストとアイコンへ自動的に切り替わり、描画負荷を最小化。
-*   **Physics**: `d3-force` の計算を **Web Worker** にオフロード。UIスレッドをブロックせず、常に滑らかな操作感を実現。
-*   **Text**: BitmapFont（英数字・高速）と Canvas（日本語・動的生成）のハイブリッド描画システム。
-
-### 📂 Directory Structure
-
-```
-src/
-├── extension.ts          … Extension Host (パネル管理 + Analyzer 起動)
-├── analyzer.ts           … TypeScript AST 解析 → 依存グラフ生成
-├── webview.ts            … Webview HTML/CSS テンプレート
-└── webview/
-    ├── main.ts           … Orchestrator (全モジュールの配線)
-    ├── worker.ts         … Web Worker (d3-force シミュレーション)
-    ├── core/
-    │   ├── state.ts      … AppState シングルトン
-    │   ├── i18n.ts       … 国際化 (ja/en)
-    │   ├── lod.ts        … Level of Detail 判定
-    │   ├── vscode-api.ts … VS Code API ラッパー
-    │   └── worker-bridge.ts … Worker 通信ブリッジ
-    ├── renderer/
-    │   ├── graph.ts      … ノード/エッジ描画 + インタラクション
-    │   └── effects.ts    … パーティクル/衝撃波/エッジフロー
-    ├── ui/
-    │   ├── toolbar.ts    … Rune + Layout ヘッダーバー
-    │   ├── search.ts     … 検索オーバーレイ
-    │   ├── breadcrumbs.ts … パンくずナビゲーション
-    │   ├── minimap.ts    … ミニマップ
-    │   ├── detail-panel.ts … 詳細パネル + Code Peek
-    │   └── help.ts       … ヘルプ/凡例オーバーレイ
-    └── utils/
-        ├── color.ts      … カラーユーティリティ
-        ├── font.ts       … BitmapFont ハイブリッドシステム
-        └── drawing.ts    … 描画ヘルパー
-```
-
-**設計パターン**: 各モジュールは `setXxxContext()` 関数で依存を受け取る DI パターンを採用し、循環参照を回避しています。
+ノードをクリックすると、そのファイルが中心に来て依存先が周りに再配置され、詳細パネルが開きます。
 
 ---
 
-## 🔧 ビルドシステム
+## しくみ（技術ハイライト）
 
-esbuild による **3つのビルド**:
+- **解析**: TypeScript Compiler API（AST）で、正規表現に頼らず依存を正確に解決します。循環参照は Tarjan's SCC アルゴリズムで検出します。
+- **描画**: PixiJS（WebGL）でレンダリング。ズームアウト時はノードを簡略表示する LOD（詳細度）で描画負荷を抑えます。
+- **計算の分離**: `d3-force` の物理シミュレーションを Web Worker にオフロードし、UI スレッドをブロックしません。
+- **3 コンテキスト構成**: Extension Host（解析）/ Webview（描画）/ Web Worker（レイアウト計算）。詳細は [CLAUDE.md](CLAUDE.md) を参照してください。
 
-| ターゲット | フォーマット | アウトプット |
-|--------|--------|--------|
-| Extension Host | CJS | `out/extension.js` |
-| Webview | IIFE | `out/webview/main.js` |
-| Web Worker | IIFE | `out/webview/worker.js` |
+---
 
-### スクリプト
+## ビルド
 
 ```bash
 npm run compile    # 本番ビルド
-npm run watch      # ファイル変更監視ビルド
+npm run watch      # 変更監視ビルド
 npm run lint       # ESLint チェック
-npm run test       # テスト実行
+npm run test       # テスト
 ```
 
+esbuild で Extension Host（CJS）/ Webview（IIFE）/ Web Worker（IIFE）の 3 つを別々にバンドルしています。
+
 ---
 
-## 📦 技術スタック
+## 技術スタック
 
-| ライブラリ | バージョン | パーパス |
-|---------|---------|---------|
+| ライブラリ | バージョン | 用途 |
+| :--- | :--- | :--- |
 | [PixiJS](https://pixijs.com/) | 8.6.6 | WebGL レンダリング |
-| [pixi-viewport](https://github.com/davidfig/pixi-viewport) | 6.0.3 | 無限キャンバス (drag/pinch/wheel) |
+| [pixi-viewport](https://github.com/davidfig/pixi-viewport) | 6.0.3 | 無限キャンバス（drag / pinch / wheel） |
 | [d3-force](https://d3js.org/) | 3.0.0 | 力学シミュレーション |
-| [d3-hierarchy](https://d3js.org/) | 3.1.2 | 泡宇宙 pack レイアウト |
-| [TypeScript](https://www.typescriptlang.org/) | 5.9.3 | 型安全な開発 |
-| [esbuild](https://esbuild.github.io/) | 0.24.0 | 高速バンドラー |
+| [d3-hierarchy](https://d3js.org/) | 3.1.2 | 入れ子円（泡宇宙）レイアウト |
+| [TypeScript](https://www.typescriptlang.org/) | 5.9.3 | 解析エンジン（Compiler API） |
+| [esbuild](https://esbuild.github.io/) | 0.24.0 | バンドラー |
 
 ---
 
-## 🤝 Contribution
+## もっと詳しく
 
-バグ報告、機能追加の提案（プルリクエスト）は歓迎します。
-新たなルーンの追加や、禁断の魔術（新機能）の実装をお待ちしています。
+- 🗂️ [ドキュメント索引](docs/README.md)
+- 📜 [解析モードガイド](docs/RUNES_GUIDE.md)
+- 📐 [レイアウトガイド](docs/LAYOUTS_GUIDE.md)
+- 🤝 [コントリビューションガイド](CONTRIBUTING.md)
+- 📝 [変更履歴（CHANGELOG）](CHANGELOG.md)
 
-## 📄 License
+---
+
+## ライセンス
 
 MIT © Code Grimoire Contributors
