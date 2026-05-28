@@ -4,12 +4,13 @@
 .github/**
 src/**
 test/**
-Dock/**
+docs/legacy/**
+docs/20*.md
+tasks/**
 .gitignore
 .gitattributes
 .editorconfig
 .yarnrc
-vsc-extension-quickstart.md
 CONTRIBUTING.md
 CODE_OF_CONDUCT.md
 **/tsconfig.json
